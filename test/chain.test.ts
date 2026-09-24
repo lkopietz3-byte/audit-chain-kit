@@ -40,15 +40,17 @@ describe("appendEntry", () => {
   });
 
   it("is deterministic: same payload sequence (with a fixed clock) hashes identically", async () => {
-    const realDateNow = Date.prototype.toISOString;
-    // Pin createdAt so both runs hash identical records.
-    Date.prototype.toISOString = () => "2026-01-01T00:00:00.000Z";
+    // Pin createdAt so both runs hash identical records. Only Date is faked;
+    // timers and microtasks stay real so Web Crypto promises still resolve.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
     try {
       const a = await appendEntry(await appendEntry([], { x: 1 }), { x: 2 });
       const b = await appendEntry(await appendEntry([], { x: 1 }), { x: 2 });
+      expect(a[1]!.createdAt).toBe("2026-01-01T00:00:00.000Z");
       expect(a[1]!.entryHash).toBe(b[1]!.entryHash);
     } finally {
-      Date.prototype.toISOString = realDateNow;
+      vi.useRealTimers();
     }
   });
 });

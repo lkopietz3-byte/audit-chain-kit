@@ -23,6 +23,9 @@
 import { createHash } from "node:crypto";
 import type { Hasher } from "./types.js";
 
-export const sha256HexNodeFallback: Hasher = async (input: string): Promise<string> => {
-  return createHash("sha256").update(input, "utf8").digest("hex");
-};
+// Not `async`: there is nothing to await. The Promise executor still turns a
+// synchronous throw from `createHash` into a rejection, matching `sha256Hex`.
+export const sha256HexNodeFallback: Hasher = (input: string): Promise<string> =>
+  new Promise((resolve) => {
+    resolve(createHash("sha256").update(input, "utf8").digest("hex"));
+  });

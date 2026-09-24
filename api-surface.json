@@ -1,0 +1,12 @@
+{
+  "audit-chain-kit": [
+    "GENESIS_HASH",
+    "appendEntry",
+    "canonicalJSON",
+    "sha256Hex",
+    "verifyChain"
+  ],
+  "audit-chain-kit/hash-node-fallback": [
+    "sha256HexNodeFallback"
+  ]
+}

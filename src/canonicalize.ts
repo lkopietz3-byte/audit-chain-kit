@@ -16,7 +16,7 @@ import type { Canonicalizer } from "./types.js";
 export const canonicalJSON: Canonicalizer = (value: unknown): string => {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJSON).join(",")}]`;
-  const keys = Object.keys(value as Record<string, unknown>).sort();
+  const keys = Object.keys(value).sort();
   const body = keys
     .map((k) => `${JSON.stringify(k)}:${canonicalJSON((value as Record<string, unknown>)[k])}`)
     .join(",");

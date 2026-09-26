@@ -4,40 +4,23 @@ A small, dependency-free TypeScript library for append-only, hash-chained
 audit logs — plus a verifier meant to be run by someone who does **not**
 trust you.
 
+Verification checks the internal consistency of the supplied chain. Detecting
+wholesale replacement requires an independently retained trusted head or
+other external anchor; the optional expected minimum length can catch tail
+truncation. Verification does not establish who authored the records or
+protect their storage.
+
 Zero runtime dependencies. ESM only. MIT licensed.
 
-## What this is honestly, not what it sounds like
+## Purpose and trust boundary
 
-**The hash-chain append pattern itself is common — this library does not
-claim otherwise.** `entry_hash = sha256(prev_hash + canonicalJSON(record))`
-is, as of 2026, one of the most commoditized ideas in AI/dev tooling: 20+
-near-identical open-source implementations exist. `halo-record` (61 GitHub
-stars) uses this exact formula. `AgentLens`, `ai-audit-trail`, `Tesserae`,
-`capsule`, and `GoLogX` all implement variations on the same idea. If you
-came here looking for a novel tamper-evidence algorithm, this isn't one —
-nobody's is, at this point; it's a solved, well-understood pattern and
-you should feel free to treat it as a commodity.
-
-**What's less common, and what this library actually leads with, is
-`verifyChain` as a standalone, zero-dependency, independently-runnable
-artifact meant for a skeptical THIRD PARTY — not the chain's own operator —
-to execute themselves.** Most of the 20+ comparable projects are libraries
-*you* install to write and check *your own* chain; you run the verifier on
-your own infrastructure, with your own trust in your own process. Fewer of
-them explicitly ship a verifier designed for the other direction: someone
-who received a chain from you and does not want to trust your server, your
-database, or your npm registry account — just Web Crypto and a copy of a
-few small functions they can read in one sitting. That's the actual reason
-`verifyChain` exists as its own exported function using only
-`globalThis.crypto.subtle`, with no import of any kind, rather than being
-folded into a "verify chain, but only if you trust our SDK" story. Ship the
-chain plus this file (or its ~80 lines, pasted) to the third party, and they
-never have to run `npm install` or trust anything about you to check your
-work.
-
-So: treat the append/hash-chain half of this package as infrastructure —
-useful, not a differentiator, don't market it as one. The verifier's
-third-party-runnable framing is the one part worth calling out.
+The package appends hash-linked records and exports a standalone `verifyChain`
+function using Web Crypto. A recipient can run that verifier on a supplied
+chain without relying on the application that produced the records. It checks
+the chain's internal consistency. To detect wholesale replacement, the
+recipient needs a trusted head or other anchor retained independently of the
+chain. Keeping the chain and its claimed head in the same mutable place does
+not provide that independent comparison.
 
 ## Install
 
@@ -92,8 +75,8 @@ Detects:
 await verifyChain(chain, undefined, { expectedMinLength: 42 });
 ```
 
-This proves the chain you were handed is internally consistent and
-unaltered *since it was hashed*. It does **not** prove nobody with write
+This checks whether the chain you were handed is internally consistent. It
+does **not** prove nobody with write
 access to the origin ever rewrote the whole chain from genesis and handed
 you a self-consistent fake — that's what "tamper-evident, not tamper-proof"
 means, and it's true of every hash-chain scheme, not a limitation specific

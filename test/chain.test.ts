@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 import { appendEntry, verifyChain, GENESIS_HASH } from "../src/index.js";
 import type { ChainEntry } from "../src/index.js";
 
-async function buildValidChain(): Promise<ChainEntry<{ note: string }>[]> {
-  let chain: ChainEntry<{ note: string }>[] = [];
+async function buildValidChain(): Promise<readonly ChainEntry<{ note: string }>[]> {
+  let chain: readonly ChainEntry<{ note: string }>[] = [];
   chain = await appendEntry(chain, { note: "genesis event" });
   chain = await appendEntry(chain, { note: "second event" });
   chain = await appendEntry(chain, { note: "third event" });
@@ -33,10 +33,26 @@ describe("appendEntry", () => {
     expect(next).not.toBe(original);
   });
 
-  it("returns a frozen array of frozen entries", async () => {
+  it("returns a frozen array of frozen entries, typed readonly", async () => {
     const chain = await appendEntry([], { note: "a" });
     expect(Object.isFrozen(chain)).toBe(true);
     expect(Object.isFrozen(chain[0])).toBe(true);
+    // The types must say what the runtime does: these compile only if the
+    // return type is readonly (`npm run typecheck` fails otherwise).
+    // @ts-expect-error the returned array is readonly, matching Object.freeze
+    const asMutable: ChainEntry<{ note: string }>[] = chain;
+    expect(() => asMutable.push(chain[0]!)).toThrow(TypeError);
+    // @ts-expect-error entries are frozen
+    expect(() => { chain[0]!.index = 9; }).toThrow(TypeError);
+  });
+
+  it("does not copy or freeze the payload: mutating it afterwards breaks verification", async () => {
+    const payload = { note: "a" };
+    const chain = await appendEntry([], payload);
+    expect(chain[0]!.payload).toBe(payload);
+    expect(Object.isFrozen(payload)).toBe(false);
+    payload.note = "changed later";
+    expect((await verifyChain(chain)).valid).toBe(false);
   });
 
   it("is deterministic: same payload sequence (with a fixed clock) hashes identically", async () => {

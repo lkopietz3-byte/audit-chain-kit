@@ -16,7 +16,7 @@ export type {
 
 /**
  * Append one entry to a chain. Does not mutate `chain`; returns a new frozen
- * array with the new frozen entry at the end. The payload object itself is
+ * array (typed `readonly`) with the new frozen entry at the end. The payload object itself is
  * stored by reference and not frozen: if you mutate it afterwards, the entry
  * will fail verification.
  *
@@ -44,7 +44,7 @@ export async function appendEntry<TPayload = unknown>(
   payload: TPayload,
   canonicalize: Canonicalizer = canonicalJSON,
   hash: Hasher = sha256Hex,
-): Promise<ChainEntry<TPayload>[]> {
+): Promise<readonly Readonly<ChainEntry<TPayload>>[]> {
   if (!isArrayValue(chain)) throw new TypeError("appendEntry: chain must be an array");
 
   let prevHash = GENESIS_HASH;
@@ -69,9 +69,9 @@ export async function appendEntry<TPayload = unknown>(
   };
 
   const entryHash = await hash(canonicalize(record));
-  const entry: ChainEntry<TPayload> = Object.freeze({ ...record, entryHash });
+  const entry: Readonly<ChainEntry<TPayload>> = Object.freeze({ ...record, entryHash });
 
-  return Object.freeze([...chain, entry]) as ChainEntry<TPayload>[];
+  return Object.freeze([...chain, entry]);
 }
 
 /**

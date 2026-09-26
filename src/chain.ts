@@ -1,10 +1,11 @@
 import { canonicalJSON } from "./canonicalize.js";
 import { sha256Hex } from "./hash.js";
 import { GENESIS_HASH } from "./types.js";
-import type { Canonicalizer, ChainEntry, Hasher, VerifyOptions, VerifyResult } from "./types.js";
+import type { Canonicalizer, ChainAnchor, ChainEntry, Hasher, VerifyOptions, VerifyResult } from "./types.js";
 
 export { GENESIS_HASH } from "./types.js";
 export type {
+  ChainAnchor,
   ChainEntry,
   ChainRecord,
   Canonicalizer,
@@ -80,21 +81,23 @@ export async function appendEntry<TPayload = unknown>(
  * and `entryHash`; `prevHash` equals the previous entry's `entryHash` (or
  * {@link GENESIS_HASH}); `entryHash` equals the hash of the canonicalized
  * entry minus `entryHash` (so any added, removed or changed field fails); and
- * `index` equals its position. Then the optional `expectedMinLength`
- * check. Returns the first failure found.
+ * `index` equals its position. Then the optional `expectedMinLength` and
+ * `anchor` checks. Returns the first failure found.
  *
  * What a valid result means: the chain is internally consistent. It does
  * NOT mean nobody changed it. There is no secret key, so anyone who can edit
  * the stored chain can recompute every hash after an edit, delete entries
- * from the end, or append new ones, and the result is still valid.
+ * from the end, or append new ones, and the result is still valid. Only an
+ * `anchor` (an `entryHash` you got earlier from somewhere the writer cannot
+ * change) detects that, and only for entries up to the anchor.
  *
  * Malformed input fails closed: a non-array `chain` returns
  * `{ valid: false }` rather than throwing.
  *
  * @param chain - the entries to check, in order
  * @param canonicalize - must be the canonicalizer used to append; defaults to `canonicalJSON`
- * @param options - `expectedMinLength`, `hash` (see {@link VerifyOptions})
- * @throws TypeError if `expectedMinLength` is malformed (a caller bug, not a chain problem)
+ * @param options - `expectedMinLength`, `anchor`, `hash` (see {@link VerifyOptions})
+ * @throws TypeError if `expectedMinLength` or `anchor` is malformed (a caller bug, not a chain problem)
  * @throws whatever `canonicalize` or `hash` throws
  */
 export async function verifyChain<TPayload = unknown>(
@@ -104,9 +107,11 @@ export async function verifyChain<TPayload = unknown>(
 ): Promise<VerifyResult> {
   const hash = options?.hash ?? sha256Hex;
   const minLength = options?.expectedMinLength;
+  const anchor = options?.anchor;
   if (minLength !== undefined && !isIndex(minLength)) {
     throw new TypeError(`verifyChain: expectedMinLength must be a non-negative integer, got ${String(minLength)}`);
   }
+  if (anchor !== undefined) assertAnchor(anchor);
 
   if (!isArrayValue(chain)) {
     return { valid: false, brokenAtIndex: null, reason: "chain is not an array" };
@@ -157,6 +162,23 @@ export async function verifyChain<TPayload = unknown>(
     };
   }
 
+  if (anchor !== undefined) {
+    if (chain.length <= anchor.index) {
+      return {
+        valid: false,
+        brokenAtIndex: null,
+        reason: `chain has ${chain.length} entries, so there is no entry at anchor index ${anchor.index} (entries were deleted from the end)`,
+      };
+    }
+    if (chain[anchor.index]!.entryHash !== anchor.entryHash) {
+      return {
+        valid: false,
+        brokenAtIndex: anchor.index,
+        reason: `entry ${anchor.index} entryHash does not match the anchor (entries up to ${anchor.index} were rewritten or replaced)`,
+      };
+    }
+  }
+
   return { valid: true, brokenAtIndex: null, reason: null };
 }
 
@@ -171,4 +193,10 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function isIndex(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function assertAnchor(anchor: unknown): asserts anchor is ChainAnchor {
+  if (!isObject(anchor) || !isIndex(anchor["index"]) || typeof anchor["entryHash"] !== "string" || anchor["entryHash"] === "") {
+    throw new TypeError("verifyChain: anchor must be { index: non-negative integer, entryHash: non-empty string }");
+  }
 }

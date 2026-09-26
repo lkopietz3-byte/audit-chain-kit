@@ -1,5 +1,6 @@
 export { appendEntry, verifyChain, GENESIS_HASH } from "./chain.js";
 export type {
+  ChainAnchor,
   ChainEntry,
   ChainRecord,
   Canonicalizer,

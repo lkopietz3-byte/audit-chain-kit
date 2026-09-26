@@ -106,7 +106,7 @@ describe("verifyChain: other tamper modes", () => {
   });
 
   it("cannot see a rewrite: anyone can recompute the whole chain (no key)", async () => {
-    // Honest-limit test: a valid result does not mean nobody changed the chain.
+    // Honest-limit test: this is WHY an anchor is needed.
     const original = await chainOf(3);
     let rewritten: readonly ChainEntry<Note>[] = [];
     for (const e of original) rewritten = await appendEntry<Note>(rewritten, e.index === 1 ? { n: "EDITED" } : e.payload);
@@ -139,6 +139,59 @@ describe("verifyChain: expectedMinLength", () => {
   it.each([NaN, -1, 1.5, Infinity, "3", null])("throws a TypeError for expectedMinLength %s", async (bad) => {
     const chain = await chainOf(1);
     const options = { expectedMinLength: bad } as unknown as VerifyOptions;
+    await expect(verifyChain(chain, undefined, options)).rejects.toThrow(TypeError);
+  });
+});
+
+describe("verifyChain: anchor", () => {
+  it("accepts a chain that still contains the anchored entry (at the end, middle, or start)", async () => {
+    const chain = await chainOf(4);
+    for (const i of [3, 1, 0]) {
+      expect(await verifyChain(chain, undefined, { anchor: chain[i]! })).toEqual(VALID);
+    }
+  });
+
+  it("accepts entries appended after the anchor was taken", async () => {
+    const chain = await chainOf(2);
+    const anchor = { index: chain[1]!.index, entryHash: chain[1]!.entryHash };
+    const longer = await appendEntry<Note>(chain, { n: "later" });
+    expect(await verifyChain(longer, undefined, { anchor })).toEqual(VALID);
+  });
+
+  it("catches truncate-then-append, which expectedMinLength misses", async () => {
+    const chain = await chainOf(3);
+    let forged: readonly ChainEntry<Note>[] = chain.slice(0, 1);
+    forged = await appendEntry<Note>(forged, { n: "FAKE" });
+    forged = await appendEntry<Note>(forged, { n: "FAKE" });
+    const result = await verifyChain(forged, undefined, { expectedMinLength: 3, anchor: chain[2]! });
+    expect(result).toMatchObject({ valid: false, brokenAtIndex: 2 });
+    expect(result.reason).toMatch(/anchor/);
+  });
+
+  it("catches a full rewrite from genesis", async () => {
+    const original = await chainOf(3);
+    let rewritten: readonly ChainEntry<Note>[] = [];
+    for (const e of original) rewritten = await appendEntry<Note>(rewritten, e.index === 1 ? { n: "EDITED" } : e.payload);
+    expect(await verifyChain(rewritten, undefined, { anchor: original[2]! })).toMatchObject({ valid: false, brokenAtIndex: 2 });
+  });
+
+  it("catches truncation below the anchor", async () => {
+    const chain = await chainOf(3);
+    const result = await verifyChain(chain.slice(0, 2), undefined, { anchor: chain[2]! });
+    expect(result).toMatchObject({ valid: false, brokenAtIndex: null });
+    expect(result.reason).toMatch(/no entry at anchor index 2/);
+  });
+
+  it.each([
+    ["a negative index", { index: -1, entryHash: GENESIS_HASH }],
+    ["a fractional index", { index: 0.5, entryHash: GENESIS_HASH }],
+    ["a string index", { index: "0", entryHash: GENESIS_HASH }],
+    ["a missing entryHash", { index: 0 }],
+    ["an empty entryHash", { index: 0, entryHash: "" }],
+    ["null", null],
+  ])("throws a TypeError for an anchor with %s", async (_label, anchor) => {
+    const chain = await chainOf(1);
+    const options = { anchor } as unknown as VerifyOptions;
     await expect(verifyChain(chain, undefined, options)).rejects.toThrow(TypeError);
   });
 });

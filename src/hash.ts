@@ -1,22 +1,21 @@
 import type { Hasher } from "./types.js";
 
 /**
- * Default hasher: SHA-256 via the Web Crypto API (`globalThis.crypto.subtle`)
- * ONLY. No `node:crypto`, no npm dependency, no import of any kind. This is
- * what makes `verifyChain` runnable by a third party — a browser tab with
- * this one file pasted in, or a `<script type="module">` with zero installs
- * — who does not trust your server, your database, or your npm registry
- * account, and wants to recompute the chain themselves.
+ * Default hasher: SHA-256 through Web Crypto (`globalThis.crypto.subtle`),
+ * returned as 64 lowercase hex characters. This file imports nothing at
+ * runtime, so `appendEntry` and `verifyChain` need no Node built-in and no
+ * npm dependency.
  *
- * Web Crypto's `subtle.digest` is Promise-based in every environment (there
- * is no synchronous digest API), so this — and therefore `appendEntry` and
- * `verifyChain` — are async.
+ * The input is encoded as UTF-8 with `TextEncoder` (a lone surrogate becomes
+ * U+FFFD). Gives the same digests as `sha256HexNodeFallback` (tested).
+ * Checked here on Node 20, 22, 24 and 26, which expose `globalThis.crypto`
+ * without flags. Any other runtime that exposes `crypto.subtle.digest`
+ * should work but is not tested here.
  *
- * Works unmodified in: every modern browser, Deno, Bun, Cloudflare Workers,
- * and Node 19+ (Node exposes Web Crypto as a global since v19; no `--experimental`
- * flag needed since Node 20). If you must support a runtime older than that
- * and have no polyfill, see `hash-node-fallback.ts` — the one other file in
- * this package, and the only one that imports a Node built-in.
+ * @throws TypeError (as a rejected promise) if `input` is not a string
+ * @throws Error (as a rejected promise) if `globalThis.crypto.subtle` is
+ *   missing; in that case pass `sha256HexNodeFallback` from
+ *   "audit-chain-kit/hash-node-fallback".
  */
 export const sha256Hex: Hasher = async (input: string): Promise<string> => {
   if (typeof input !== "string") {
@@ -28,8 +27,7 @@ export const sha256Hex: Hasher = async (input: string): Promise<string> => {
   if (!subtle) {
     throw new Error(
       "Web Crypto (crypto.subtle) is unavailable in this environment. " +
-        "Pass a Node fallback hasher as the `hash` option — see hash-node-fallback.ts " +
-        "(sha256HexNodeFallback) for a runtime that doesn't expose globalThis.crypto.",
+        'Pass sha256HexNodeFallback from "audit-chain-kit/hash-node-fallback" as the hash function.',
     );
   }
   const bytes = new TextEncoder().encode(input);

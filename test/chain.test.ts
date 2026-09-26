@@ -180,15 +180,14 @@ describe("Web Crypto only in the core path", () => {
   // appearing in a doc comment explaining why the file doesn't have one.
   const NODE_CRYPTO_IMPORT = /(?:from\s+["']node:crypto["']|require\(\s*["']node:crypto["']\s*\))/;
 
-  it("hash.ts contains no node:crypto import statement", () => {
-    const src = readFileSync(fileURLToPath(new URL("../src/hash.ts", import.meta.url)), "utf8");
-    expect(src).not.toMatch(NODE_CRYPTO_IMPORT);
-  });
-
-  it("chain.ts (append + verify) contains no node:crypto import statement", () => {
-    const src = readFileSync(fileURLToPath(new URL("../src/chain.ts", import.meta.url)), "utf8");
-    expect(src).not.toMatch(NODE_CRYPTO_IMPORT);
-  });
+  it.each(["hash.ts", "chain.ts", "canonicalize.ts", "types.ts", "index.ts"])(
+    "%s contains no node:crypto import statement",
+    (file) => {
+      const src = readFileSync(fileURLToPath(new URL(`../src/${file}`, import.meta.url)), "utf8");
+      expect(src).not.toMatch(NODE_CRYPTO_IMPORT);
+      expect(src).not.toMatch(/from\s+["']node:/); // no Node built-in of any kind
+    },
+  );
 
   it("index.ts does not re-export the Node fallback (opt-in only)", () => {
     const src = readFileSync(fileURLToPath(new URL("../src/index.ts", import.meta.url)), "utf8");

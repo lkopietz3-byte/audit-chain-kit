@@ -4,25 +4,39 @@ import { GENESIS_HASH } from "./types.js";
 import type { Canonicalizer, ChainEntry, Hasher, VerifyOptions, VerifyResult } from "./types.js";
 
 export { GENESIS_HASH } from "./types.js";
-export type { ChainEntry, ChainRecord, Canonicalizer, Hasher, VerifyOptions, VerifyResult } from "./types.js";
+export type {
+  ChainEntry,
+  ChainRecord,
+  Canonicalizer,
+  Hasher,
+  VerifyOptions,
+  VerifyResult,
+} from "./types.js";
 
 /**
- * Append one entry to a hash chain. Pure function: does not mutate `chain`,
- * returns a new (frozen) array with the new entry on the end.
+ * Append one entry to a chain. Does not mutate `chain`; returns a new frozen
+ * array with the new frozen entry at the end. The payload object itself is
+ * stored by reference and not frozen: if you mutate it afterwards, the entry
+ * will fail verification.
  *
- * `entryHash = hash(canonicalize({ index, payload, prevHash, createdAt }))`
- * — `prevHash` is a FIELD of the hashed record (not string-concatenated
- * separately), so it's bound into the hash the same way every other field
- * is. This is the same shape used by both source implementations this
- * package was distilled from (`forensic-report-tool`'s `audit.ts` and
- * `cruise-almanac`'s `_audit-log.js`), and it's the well-established
- * pattern shared by essentially every hash-chained-log project — see the
- * README for what is, and isn't, novel here.
+ * The new entry is
+ * `{ index, payload, prevHash, createdAt, entryHash }` where
+ * `entryHash = hash(canonicalize({ index, payload, prevHash, createdAt }))`,
+ * `index = chain.length`, `prevHash` is the last entry's `entryHash` (or
+ * {@link GENESIS_HASH} for an empty chain) and `createdAt` is
+ * `new Date().toISOString()`. `prevHash` is a field of the hashed record, so
+ * with `canonicalJSON` field boundaries are unambiguous.
  *
- * @param chain - the existing chain (or `[]` for a brand-new one)
- * @param payload - caller data for the new entry; any JSON-serializable value
- * @param canonicalize - defaults to `canonicalJSON` (recursive key-sorted JSON)
- * @param hash - defaults to `sha256Hex` (Web Crypto). Override for the Node fallback or in tests.
+ * Pass the whole chain. Only the last entry is inspected (the chain is not
+ * re-verified), but its `index` must equal its position.
+ *
+ * @param chain - the existing chain, or `[]` to start one
+ * @param payload - data for the new entry (see `canonicalJSON` for how non-JSON values are converted)
+ * @param canonicalize - defaults to `canonicalJSON`
+ * @param hash - defaults to `sha256Hex` (Web Crypto)
+ * @throws TypeError if `chain` is not an array or its last entry has no string `entryHash`
+ * @throws RangeError if the last entry's `index` is not `chain.length - 1` (for example, only the tail was passed)
+ * @throws whatever `canonicalize` or `hash` throws (for example, `canonicalJSON` on a cyclic payload)
  */
 export async function appendEntry<TPayload = unknown>(
   chain: readonly ChainEntry<TPayload>[],
@@ -30,7 +44,21 @@ export async function appendEntry<TPayload = unknown>(
   canonicalize: Canonicalizer = canonicalJSON,
   hash: Hasher = sha256Hex,
 ): Promise<ChainEntry<TPayload>[]> {
-  const prevHash = chain.length > 0 ? chain[chain.length - 1]!.entryHash : GENESIS_HASH;
+  if (!isArrayValue(chain)) throw new TypeError("appendEntry: chain must be an array");
+
+  let prevHash = GENESIS_HASH;
+  if (chain.length > 0) {
+    const last: unknown = chain[chain.length - 1];
+    if (!isObject(last) || typeof last["entryHash"] !== "string") {
+      throw new TypeError(`appendEntry: the last entry (position ${chain.length - 1}) has no string entryHash`);
+    }
+    if (last["index"] !== chain.length - 1) {
+      throw new RangeError(
+        `appendEntry: the last entry has index ${String(last["index"])} but sits at position ${chain.length - 1}; pass the whole chain`,
+      );
+    }
+    prevHash = last["entryHash"];
+  }
 
   const record = {
     index: chain.length,
@@ -46,30 +74,28 @@ export async function appendEntry<TPayload = unknown>(
 }
 
 /**
- * The third-party verifier. Walks the whole chain from genesis, independently
- * recomputing every hash — no trust in whoever produced the `chain` array is
- * required, only in this function's own (auditable, dependency-free) logic.
+ * Recompute and check every link and hash in a chain, from genesis.
  *
- * Detects:
- * - a MUTATED payload (or any field): the entry's stored `entryHash` no
- *   longer matches the hash recomputed from its current content.
- * - a SEVERED link: an entry's `prevHash` doesn't equal the previous entry's
- *   `entryHash` (tampering broke the pointer, or the entries are out of order).
- * - an entry SPLICED OUT of the middle: the same severed-link check catches
- *   this too — removing entry N leaves entry N+1's `prevHash` pointing at a
- *   hash that's no longer the preceding array element's `entryHash`.
- * - entries DELETED FROM THE END: unlike a middle splice, a tail deletion
- *   leaves no broken pointer for the walk to find (there's nothing after it
- *   to notice). Pass `expectedMinLength` if you know how long the chain
- *   should be (e.g. from a separately-stored count) and want that checked too.
+ * Checks, for each entry in order: it is an object with string `prevHash`
+ * and `entryHash`; `prevHash` equals the previous entry's `entryHash` (or
+ * {@link GENESIS_HASH}); `entryHash` equals the hash of the canonicalized
+ * entry minus `entryHash` (so any added, removed or changed field fails); and
+ * `index` equals its position. Then the optional `expectedMinLength`
+ * check. Returns the first failure found.
  *
- * This proves the presented chain is internally consistent and unaltered
- * since it was hashed — it does NOT prove nobody with write access ever
- * rewrote the chain from genesis. Tamper-evident, not tamper-proof.
+ * What a valid result means: the chain is internally consistent. It does
+ * NOT mean nobody changed it. There is no secret key, so anyone who can edit
+ * the stored chain can recompute every hash after an edit, delete entries
+ * from the end, or append new ones, and the result is still valid.
  *
- * Uses Web Crypto by default (see `hash.ts`) — no import, no npm install,
- * runs in a browser tab someone pastes this into. Async throughout because
- * `crypto.subtle.digest` is async.
+ * Malformed input fails closed: a non-array `chain` returns
+ * `{ valid: false }` rather than throwing.
+ *
+ * @param chain - the entries to check, in order
+ * @param canonicalize - must be the canonicalizer used to append; defaults to `canonicalJSON`
+ * @param options - `expectedMinLength`, `hash` (see {@link VerifyOptions})
+ * @throws TypeError if `expectedMinLength` is malformed (a caller bug, not a chain problem)
+ * @throws whatever `canonicalize` or `hash` throws
  */
 export async function verifyChain<TPayload = unknown>(
   chain: readonly ChainEntry<TPayload>[],
@@ -77,43 +103,72 @@ export async function verifyChain<TPayload = unknown>(
   options?: VerifyOptions,
 ): Promise<VerifyResult> {
   const hash = options?.hash ?? sha256Hex;
+  const minLength = options?.expectedMinLength;
+  if (minLength !== undefined && !isIndex(minLength)) {
+    throw new TypeError(`verifyChain: expectedMinLength must be a non-negative integer, got ${String(minLength)}`);
+  }
+
+  if (!isArrayValue(chain)) {
+    return { valid: false, brokenAtIndex: null, reason: "chain is not an array" };
+  }
 
   let expectedPrev = GENESIS_HASH;
   for (let i = 0; i < chain.length; i++) {
-    const entry = chain[i]!;
+    const entry: unknown = chain[i];
 
-    if (typeof entry?.entryHash !== "string" || typeof entry?.prevHash !== "string") {
-      return { valid: false, brokenAtIndex: i, reason: `entry ${i} is missing its hash fields` };
+    if (!isObject(entry) || typeof entry["entryHash"] !== "string" || typeof entry["prevHash"] !== "string") {
+      return { valid: false, brokenAtIndex: i, reason: `entry ${i} is not an object with string prevHash and entryHash` };
     }
 
-    if (entry.prevHash !== expectedPrev) {
+    if (entry["prevHash"] !== expectedPrev) {
       return {
         valid: false,
         brokenAtIndex: i,
-        reason: `entry ${i} prevHash does not match the preceding entry's hash (link severed, entries reordered, or an entry was removed)`,
+        reason: `entry ${i} prevHash does not match the preceding entry's hash (link severed, entries reordered, or an entry was removed or inserted)`,
       };
     }
 
-    const { entryHash, ...record } = entry;
+    const { entryHash, ...record } = entry as Record<string, unknown> & { entryHash: string };
     const recomputed = await hash(canonicalize(record));
     if (recomputed !== entryHash) {
       return {
         valid: false,
         brokenAtIndex: i,
-        reason: `entry ${i} content does not match its entryHash (payload was mutated after appending)`,
+        reason: `entry ${i} content does not match its entryHash (a hashed field was changed, added, or removed after appending)`,
+      };
+    }
+
+    if (record["index"] !== i) {
+      return {
+        valid: false,
+        brokenAtIndex: i,
+        reason: `entry ${i} has index ${JSON.stringify(record["index"]) ?? "undefined"}; expected ${i}`,
       };
     }
 
     expectedPrev = entryHash;
   }
 
-  if (options?.expectedMinLength != null && chain.length < options.expectedMinLength) {
+  if (minLength !== undefined && chain.length < minLength) {
     return {
       valid: false,
       brokenAtIndex: null,
-      reason: `chain has ${chain.length} entries but expectedMinLength is ${options.expectedMinLength} — entries may have been deleted from the end of the chain`,
+      reason: `chain has ${chain.length} entries but expectedMinLength is ${minLength} (entries may have been deleted from the end)`,
     };
   }
 
   return { valid: true, brokenAtIndex: null, reason: null };
+}
+
+/** Plain boolean (not a type guard), so it does not widen a readonly array to any[]. */
+function isArrayValue(value: unknown): boolean {
+  return Array.isArray(value);
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isIndex(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }

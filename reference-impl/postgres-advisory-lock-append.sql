@@ -2,6 +2,19 @@
 --
 -- Concurrency-safe append for a hash-chained audit log, backed by Postgres.
 --
+-- STATUS (read first)
+-- ---------------------------------------------------------------------------
+-- * NOT compatible with verifyChain(). This function hashes
+--   sha256(prev_hash || p_canonical_json); appendEntry()/verifyChain() hash
+--   canonicalJSON({ createdAt, index, payload, prevHash }). Rows written here
+--   fail verifyChain() even when nothing was changed.
+-- * idx, chain_id and created_at are not bound into entry_hash, and the
+--   hashed bytes (p_canonical_json) are not stored, so a row cannot be
+--   re-verified from this table alone.
+-- * Not tested in this repository (no Postgres in its test suite), and not
+--   shipped in the npm package. Treat it as an illustration of the advisory
+--   lock pattern only.
+--
 -- WHY THIS FILE EXISTS
 -- ---------------------------------------------------------------------------
 -- `appendEntry()` in this package is an in-memory pure function: it takes an
@@ -25,7 +38,7 @@
 -- THE FIX
 -- ---------------------------------------------------------------------------
 -- Wrap the SELECT and the INSERT in a single PL/pgSQL function and take a
--- session-level, TRANSACTION-SCOPED advisory lock (`pg_advisory_xact_lock`)
+-- transaction-scoped advisory lock (`pg_advisory_xact_lock`)
 -- keyed by `chain_id` before reading prev_hash. Advisory locks are:
 --   - automatically released at COMMIT or ROLLBACK (including on error or a
 --     dropped connection) — they cannot leak and wedge the table forever;
@@ -38,10 +51,12 @@
 -- the first caller's INSERT (and lock release) has completed — no fork is
 -- possible.
 --
--- This generalizes a pattern the author uses in production (a Supabase RPC
--- doing the same SELECT+INSERT-under-advisory-lock for an app's own
--- `audit_log` table); nothing here is copied from that codebase, it's
--- rewritten as a standalone, documented reference schema+function pair.
+-- Isolation level: this reasoning assumes READ COMMITTED (the Postgres
+-- default), where the SELECT below takes a fresh snapshot after the lock is
+-- granted. Under REPEATABLE READ or SERIALIZABLE the snapshot can predate
+-- the lock, so a queued caller may read a stale head; the unique
+-- (chain_id, idx) constraint then turns that into an error, not a fork.
+-- (Reasoned from Postgres semantics; not tested here.)
 --
 -- CANONICALIZATION SPLIT: SQL doesn't (and shouldn't) reimplement
 -- `canonicalJSON` from `src/canonicalize.ts`. Instead the caller computes

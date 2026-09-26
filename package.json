@@ -30,7 +30,6 @@
   "sideEffects": false,
   "files": [
     "dist",
-    "reference-impl",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"

@@ -1,8 +1,17 @@
 {
   "name": "audit-chain-kit",
   "version": "0.1.0",
-  "description": "Append-only, hash-chained audit log with a dependency-free verifier a skeptical third party can run themselves.",
-  "keywords": [],
+  "description": "Build and verify SHA-256 hash chains over audit records, with a zero-dependency Web Crypto verifier and optional anchor checks.",
+  "keywords": [
+    "audit-log",
+    "hash-chain",
+    "tamper-evident",
+    "sha256",
+    "web-crypto",
+    "integrity",
+    "verification",
+    "canonical-json"
+  ],
   "author": "Lucas Kopietz",
   "license": "MIT",
   "repository": {

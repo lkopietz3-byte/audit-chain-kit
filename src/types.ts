@@ -64,6 +64,7 @@ export interface ChainAnchor {
   entryHash: string;
 }
 
+/** Optional checks and settings for `verifyChain`. */
 export interface VerifyOptions {
   /**
    * Report the chain invalid if it has fewer entries than this. A
@@ -89,6 +90,7 @@ export interface VerifyOptions {
   hash?: Hasher;
 }
 
+/** Outcome of `verifyChain`: the first problem found, or `valid: true`. */
 export interface VerifyResult {
   /**
    * True only if `chain` is an array, every entry's `prevHash` links to the

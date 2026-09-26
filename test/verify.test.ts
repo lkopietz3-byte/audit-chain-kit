@@ -158,6 +158,13 @@ describe("verifyChain: anchor", () => {
     expect(await verifyChain(longer, undefined, { anchor })).toEqual(VALID);
   });
 
+  it("does not protect entries after the anchor (honest limit)", async () => {
+    const chain = await chainOf(3);
+    let rewritten: readonly ChainEntry<Note>[] = chain.slice(0, 2);
+    rewritten = await appendEntry<Note>(rewritten, { n: "EDITED" }); // replaces entry 2
+    expect(await verifyChain(rewritten, undefined, { anchor: chain[1]! })).toEqual(VALID);
+  });
+
   it("catches truncate-then-append, which expectedMinLength misses", async () => {
     const chain = await chainOf(3);
     let forged: readonly ChainEntry<Note>[] = chain.slice(0, 1);

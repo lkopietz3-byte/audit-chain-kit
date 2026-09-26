@@ -27,5 +27,10 @@ import type { Hasher } from "./types.js";
 // synchronous throw from `createHash` into a rejection, matching `sha256Hex`.
 export const sha256HexNodeFallback: Hasher = (input: string): Promise<string> =>
   new Promise((resolve) => {
+    if (typeof input !== "string") {
+      throw new TypeError(
+        `sha256HexNodeFallback: input must be a string, got ${input === null ? "null" : typeof input}`,
+      );
+    }
     resolve(createHash("sha256").update(input, "utf8").digest("hex"));
   });

@@ -19,6 +19,11 @@ import type { Hasher } from "./types.js";
  * this package, and the only one that imports a Node built-in.
  */
 export const sha256Hex: Hasher = async (input: string): Promise<string> => {
+  if (typeof input !== "string") {
+    // TextEncoder would silently hash String(input) (undefined -> ""), which
+    // collides with real strings and disagrees with the node:crypto fallback.
+    throw new TypeError(`sha256Hex: input must be a string, got ${input === null ? "null" : typeof input}`);
+  }
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) {
     throw new Error(

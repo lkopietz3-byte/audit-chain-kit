@@ -22,7 +22,7 @@ describe("canonicalJSON: format", () => {
   });
 
   it("sorts keys by UTF-16 code units (an astral key sorts before U+FFFF)", () => {
-    expect(canonicalJSON({ "￿": 1, "\u{10000}": 2 })).toBe('{"\u{10000}":2,"￿":1}');
+    expect(canonicalJSON({ "\uffff": 1, "\u{10000}": 2 })).toBe('{"\u{10000}":2,"\uffff":1}');
   });
 
   it("keeps array order", () => {
@@ -41,7 +41,7 @@ describe("canonicalJSON: format", () => {
   });
 
   it("does not normalize Unicode (precomposed and decomposed forms differ)", () => {
-    expect(canonicalJSON("é")).not.toBe(canonicalJSON("é"));
+    expect(canonicalJSON("\u00e9")).not.toBe(canonicalJSON("e\u0301"));
   });
 
   it("keeps an own __proto__ key as data and does not touch Object.prototype", () => {
@@ -134,8 +134,8 @@ describe("canonicalJSON: seeded fuzz", () => {
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
   }
-  const KEYS = ["a", "b", "Z", "10", "9", "é", "é", "\u{1f680}", "￿", "__proto__", "constructor", ""];
-  const STRINGS = ["", "x", "ü日本", " ", "\u0000", "\ud800", '"\\', "🚀"];
+  const KEYS = ["a", "b", "Z", "10", "9", "\u00e9", "e\u0301", "\u{1f680}", "\uffff", "__proto__", "constructor", ""];
+  const STRINGS = ["", "x", "ü日本", "\u2028", "\u0000", "\ud800", '"\\', "🚀"];
 
   function randomValue(rand: () => number, depth: number): unknown {
     const pick = Math.floor(rand() * (depth > 3 ? 6 : 9));

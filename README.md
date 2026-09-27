@@ -6,7 +6,8 @@ previous entry's hash, and `verifyChain` recomputes every hash from the
 first entry. The verifier uses only Web Crypto, so someone checking a chain
 does not have to run your code or trust your server to recompute it.
 
-ESM only. Node 20 or later. MIT licensed.
+Ships as ESM; `require()` also works on Node versions that support
+`require(esm)` (20.19+, 22.12+). Node 20 or later. MIT licensed.
 
 ## What "tamper-evident" means here
 
@@ -267,6 +268,21 @@ console.log((await verifyChain(chain, undefined, { hash: sha256HexNodeFallback }
 - **Cost and size.** `verifyChain` rehashes every entry from 0 on every
   call. Very deeply nested payloads overflow the call stack (on Node 26,
   1,000 levels worked and 5,000 threw a `RangeError`).
+
+## Relationship to sibling kits
+
+[agent-receipt-kit](https://github.com/lkopietz3-byte/agent-receipt-kit)
+checks whether an autonomous agent's self-reported claim about its own work
+matches what it was actually authorized and able to do; `verifyReceipt`
+returns a plain, JSON-serializable result
+(`{ accepted, unauthorizedActions, droppedEvidenceIds, contradictions,
+packetMismatch, reason }`). That result (or the `WorkPacket` it verified) can
+be passed directly as the `payload` to this package's `appendEntry`, giving
+each verification a tamper-evident position in a hash chain — so a later
+dispute about what an agent claimed, and when, can be checked against the
+chain instead of a mutable log. The two packages do not depend on each other;
+combining them is a matter of passing one library's plain output as the
+other's input.
 
 ## Where this came from
 

@@ -80,6 +80,38 @@ run('npm', [
 writeFileSync(join(consumer, 'package.json'), JSON.stringify({ type: 'module', private: true, dependencies: { [pkg.name]: `file:${tarball}` } }));
 const installed = join(consumer, 'node_modules', ...pkg.name.split('/'));
 
+// 3b. Every shipped source map must actually resolve ------------------------
+// A source map whose "sources" point outside the tarball (e.g. a leftover
+// .d.ts.map from a build made under an older tsconfig, still naming
+// "../src/x.ts") is broken for any consumer: the referenced file was never
+// shipped. Accept a source only if it is itself present in the tarball, or
+// the map inlines it via a non-empty sourcesContent entry.
+const packedSet = new Set(packed);
+const mapFiles = packed.filter((p) => p.endsWith('.map'));
+const mapProblems = [];
+for (const mapPath of mapFiles) {
+  const mapDir = mapPath.includes('/') ? mapPath.slice(0, mapPath.lastIndexOf('/')) : '';
+  const map = JSON.parse(readFileSync(join(installed, mapPath), 'utf8'));
+  const sources = map.sources ?? [];
+  const sourcesContent = map.sourcesContent ?? [];
+  sources.forEach((src, i) => {
+    const rawParts = (mapDir ? `${mapDir}/${src}` : src).split('/');
+    const resolvedParts = [];
+    for (const part of rawParts) {
+      if (part === '.' || part === '') continue;
+      if (part === '..') resolvedParts.pop();
+      else resolvedParts.push(part);
+    }
+    const resolved = resolvedParts.join('/');
+    const shipped = packedSet.has(resolved);
+    const inlined = typeof sourcesContent[i] === 'string' && sourcesContent[i].length > 0;
+    if (!shipped && !inlined) {
+      mapProblems.push(`${mapPath}: source "${src}" resolves to "${resolved}", which is neither in the tarball nor inlined via sourcesContent`);
+    }
+  });
+}
+assert.deepEqual(mapProblems, [], `Broken source map(s) in the tarball:\n${mapProblems.join('\n')}`);
+
 // 4. Every exports entry imports and has declarations -----------------------------
 const entries = [];
 for (const [subpath, target] of Object.entries(pkg.exports ?? { '.': pkg.main })) {

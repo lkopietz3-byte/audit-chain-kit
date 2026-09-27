@@ -2,7 +2,7 @@
 // by scripts/verify-package.mjs. It uses the public types the way a
 // TypeScript consumer would; it is type-checked, not run.
 import {
-  appendEntry, canonicalJSON, GENESIS_HASH, sha256Hex, verifyChain,
+  appendEntry, canonicalJSON, FORMAT_VERSION, GENESIS_HASH, sha256Hex, verifyChain,
 } from 'audit-chain-kit';
 import type {
   Canonicalizer, ChainAnchor, ChainEntry, ChainRecord, Hasher, VerifyOptions, VerifyResult,
@@ -23,7 +23,15 @@ export async function probe(): Promise<VerifyResult> {
   const last = chain[chain.length - 1];
   if (last === undefined) throw new Error('empty');
   const payload: AuditEvent = last.payload;
-  const record: ChainRecord<AuditEvent> = { index: last.index, payload, prevHash: last.prevHash, createdAt: last.createdAt };
+  const record: ChainRecord<AuditEvent> = {
+    formatVersion: last.formatVersion,
+    index: last.index,
+    payload,
+    prevHash: last.prevHash,
+    createdAt: last.createdAt,
+  };
+  const version: string = FORMAT_VERSION;
+  void version;
   const anchor: ChainAnchor = last; // any entry is a valid anchor shape
 
   // @ts-expect-error appendEntry returns a readonly array

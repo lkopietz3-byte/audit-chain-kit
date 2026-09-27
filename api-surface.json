@@ -1,5 +1,6 @@
 {
   "audit-chain-kit": [
+    "FORMAT_VERSION",
     "GENESIS_HASH",
     "appendEntry",
     "canonicalJSON",

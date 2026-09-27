@@ -3,7 +3,7 @@
 // check asserts a real output, not just that a name is exported.
 import assert from 'node:assert/strict';
 import {
-  appendEntry, canonicalJSON, GENESIS_HASH, sha256Hex, verifyChain,
+  appendEntry, canonicalJSON, FORMAT_VERSION, GENESIS_HASH, sha256Hex, verifyChain,
 } from 'audit-chain-kit';
 import { sha256HexNodeFallback } from 'audit-chain-kit/hash-node-fallback';
 
@@ -25,13 +25,22 @@ assert.throws(() => canonicalJSON(undefined), TypeError);
 assert.equal(GENESIS_HASH, '0'.repeat(64));
 
 // Golden vector: the documented record string hashes to the documented value.
-const record0 = '{"createdAt":"2026-01-01T00:00:00.000Z","index":0,"payload":{"action":"report.created","by":"user_1"},"prevHash":"0000000000000000000000000000000000000000000000000000000000000000"}';
-const hash0 = '65e663a7038e462487c6626b4b5ed03dd7c7d58d37ff2e332c6e0f0aac77cd94';
+assert.equal(FORMAT_VERSION, 'audit-chain-kit/v1');
+const record0 = '{"createdAt":"2026-01-01T00:00:00.000Z","formatVersion":"audit-chain-kit/v1","index":0,"payload":{"action":"report.created","by":"user_1"},"prevHash":"0000000000000000000000000000000000000000000000000000000000000000"}';
+const hash0 = 'e2e95ac52a1f387f89f091b90d6a6caf1e2f68acffabe3b4243ed887acab76ca';
 assert.equal(await sha256Hex(record0), hash0);
 assert.deepEqual(
-  await verifyChain([{ index: 0, payload: { action: 'report.created', by: 'user_1' }, prevHash: GENESIS_HASH, createdAt: '2026-01-01T00:00:00.000Z', entryHash: hash0 }]),
+  await verifyChain([{ formatVersion: FORMAT_VERSION, index: 0, payload: { action: 'report.created', by: 'user_1' }, prevHash: GENESIS_HASH, createdAt: '2026-01-01T00:00:00.000Z', entryHash: hash0 }]),
   VALID,
 );
+
+// A chain hashed without formatVersion (pre-round-2 format) is rejected with
+// a clear reason, not silently accepted and not thrown.
+const preV1Record = '{"createdAt":"2026-01-01T00:00:00.000Z","index":0,"payload":{"action":"report.created","by":"user_1"},"prevHash":"0000000000000000000000000000000000000000000000000000000000000000"}';
+const preV1Hash = await sha256Hex(preV1Record);
+const preV1Result = await verifyChain([{ index: 0, payload: { action: 'report.created', by: 'user_1' }, prevHash: GENESIS_HASH, createdAt: '2026-01-01T00:00:00.000Z', entryHash: preV1Hash }]);
+assert.equal(preV1Result.valid, false);
+assert.match(preV1Result.reason, /formatVersion/);
 
 // Build a chain, store it as JSON, read it back, verify.
 let chain = await appendEntry([], { action: 'report.created', by: 'user_1' });

@@ -47,16 +47,12 @@ nothing is signed, and `createdAt` is whatever the writer's clock said.
 
 ## Install
 
-Not published to npm yet. Install from GitHub (the repository is private
-for now, so this needs access to it):
-
 ```bash
-npm install github:lkopietz3-byte/audit-chain-kit
+npm install audit-chain-kit
 ```
 
-A git install runs the package's `prepare` script, which builds `dist/`
-with TypeScript. (Checked with an equivalent local `git+file:` install on
-npm 11.16, which prints an `allow-scripts` warning and still builds.)
+Or build from source: clone the repository (currently private) and run
+`npm install && npm run build`.
 
 ## Quickstart
 

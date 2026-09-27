@@ -51,7 +51,7 @@ nothing is signed, and `createdAt` is whatever the writer's clock said.
 npm install audit-chain-kit
 ```
 
-Or build from source: clone the repository (currently private) and run
+Or build from source: clone the repository and run
 `npm install && npm run build`.
 
 ## Quickstart

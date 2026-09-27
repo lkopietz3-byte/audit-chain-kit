@@ -12,9 +12,10 @@ First release. Not published to npm; install from GitHub.
 
 - `appendEntry(chain, payload, canonicalize?, hash?)`: returns a new frozen
   chain with one entry whose `entryHash` is the SHA-256 of
-  `canonicalJSON({ createdAt, index, payload, prevHash })`.
+  `canonicalJSON({ createdAt, formatVersion, index, payload, prevHash })`.
 - `verifyChain(chain, canonicalize?, options?)`: recomputes every link and
-  hash from genesis and checks each `index` against its position. Options:
+  hash from genesis, checks each entry's `formatVersion` against
+  `FORMAT_VERSION`, and checks each `index` against its position. Options:
   `expectedMinLength`, `anchor` (`{ index, entryHash }` held outside the
   writer's control; the only way to detect a rewrite or truncate-and-append),
   and `hash`.
@@ -22,8 +23,10 @@ First release. Not published to npm; install from GitHub.
   conversions first, so a value and its JSON round trip hash the same.
 - `sha256Hex` (Web Crypto) and `sha256HexNodeFallback` (`node:crypto`, in
   the `audit-chain-kit/hash-node-fallback` subpath), with identical output.
-- `GENESIS_HASH` and the types `ChainRecord`, `ChainEntry`, `ChainAnchor`,
-  `Canonicalizer`, `Hasher`, `VerifyOptions`, `VerifyResult`.
+- `GENESIS_HASH`, `FORMAT_VERSION` (`"audit-chain-kit/v1"`, the
+  format-and-domain tag hashed into every entry) and the types
+  `ChainRecord`, `ChainEntry`, `ChainAnchor`, `Canonicalizer`, `Hasher`,
+  `VerifyOptions`, `VerifyResult`.
 
 ### Changed before release (differences from the pre-release code)
 
@@ -36,5 +39,19 @@ First release. Not published to npm; install from GitHub.
   entries whose `index` is not their position, and throws a `TypeError` for
   a malformed `expectedMinLength`.
 - Both hashers reject non-string input with a `TypeError`.
-- `reference-impl/` is no longer included in the package. It is not
-  compatible with `verifyChain`.
+- Every entry's hashed record now includes `formatVersion: "audit-chain-kit/v1"`
+  (exported as `FORMAT_VERSION`), so a future format change gets a new tag instead
+  of silently producing hashes that look like this format, and so this
+  package's `entryHash` can't be confused with another hash-chain library's
+  digest of the same bytes. This changes every `entryHash`, including the
+  golden vectors in `test/vectors.test.ts` (recomputed and re-verified
+  independently with `shasum` and Python's `json.dumps`). `verifyChain`
+  rejects an entry whose `formatVersion` is missing or different, with a
+  reason that names `formatVersion`, and does not throw.
+- `reference-impl/` (the Postgres advisory-lock SQL) is deleted. It hashed
+  `sha256(prev_hash || canonical_json)`, a different formula from this
+  package's, so it was never compatible with `verifyChain`, was never
+  shipped in the npm package, and had no Postgres test harness in this
+  repository to make it right. Labeling it as incompatible (0.1.0, earlier
+  in this section) was a stopgap; deleting it removes a file that could
+  only mislead a reader into using its formula.

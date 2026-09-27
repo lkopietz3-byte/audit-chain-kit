@@ -3,8 +3,13 @@
 ## Invariants (each is covered by tests in `test/`)
 
 - `entryHash` = lowercase hex SHA-256 of the UTF-8 bytes of
-  `canonicalize({ createdAt, index, payload, prevHash })`. Golden vectors in
-  `test/vectors.test.ts` pin the exact bytes.
+  `canonicalize({ createdAt, formatVersion, index, payload, prevHash })`.
+  Golden vectors in `test/vectors.test.ts` pin the exact bytes.
+- Every entry's `formatVersion` is exactly `FORMAT_VERSION`
+  (`"audit-chain-kit/v1"`). `appendEntry` always writes it; `verifyChain`
+  rejects a missing or different value with a reason naming
+  `formatVersion`, checked before the hash is recomputed, and never throws
+  for this.
 - Entry 0 has `prevHash === GENESIS_HASH` (64 zeros); entry `i` has
   `prevHash === chain[i - 1].entryHash` and `index === i`.
 - `canonicalJSON(v) === canonicalJSON(JSON.parse(JSON.stringify(v)))` for
@@ -22,8 +27,9 @@
 - Detection of a rewrite, or of truncate-then-append, without an anchor held
   outside the writer's control. There is no key.
 - Anything about who wrote an entry or whether `createdAt` is accurate.
-- Compatibility of `reference-impl/*.sql` with `verifyChain` (it is not
-  compatible, not tested, and not shipped).
+- A migration path between format versions. `verifyChain` only accepts the
+  current `FORMAT_VERSION`; reading an older or newer format is not
+  implemented.
 - Runtimes other than Node 20, 22, 24 and 26.
 - Equivalence with RFC 8785 (JCS) or any other canonical JSON scheme.
 

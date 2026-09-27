@@ -37,8 +37,10 @@ nothing is signed, and `createdAt` is whatever the writer's clock said.
 - You need to detect a rewrite by the operator and have no way to keep an
   anchor outside the operator's control.
 - Several processes append to the same chain at once. `appendEntry` works
-  on an in-memory array and does not serialize writers (see
-  [reference-impl](#reference-impl)).
+  on an in-memory array and does not serialize writers. Making concurrent,
+  DB-backed appends safe (for example, a transaction-scoped lock around the
+  read-last-hash-then-insert step) is your application's job; this package
+  has no reference implementation for it.
 - You need to prove one entry is in a log without handing over the whole
   chain (inclusion proofs). This is a linear chain, not a Merkle tree, and
   `verifyChain` always walks from entry 0.
@@ -83,12 +85,21 @@ console.log(await verifyChain(tampered, undefined, { anchor }));
 
 ## How an entry is hashed
 
-Each entry is `{ index, payload, prevHash, createdAt, entryHash }`, where
+Each entry is `{ formatVersion, index, payload, prevHash, createdAt, entryHash }`, where
 
 ```
 entryHash = lowercase hex SHA-256 of the UTF-8 bytes of
-            canonicalJSON({ createdAt, index, payload, prevHash })
+            canonicalJSON({ createdAt, formatVersion, index, payload, prevHash })
 ```
+
+`formatVersion` is always the fixed string `"audit-chain-kit/v1"`, exported
+as `FORMAT_VERSION` so you can compare against it. It exists
+so a future change to the record shape or the canonicalizer gets a new tag
+instead of silently producing hashes that look like this format but
+aren't, and so this package's `entryHash` can never be mistaken for some
+other hash-chain library's digest of the same bytes. `verifyChain` rejects
+an entry whose `formatVersion` is missing or different, with a clear
+reason, before it even tries to recompute the hash.
 
 `index` is the entry's position (from 0), `prevHash` is the previous
 entry's `entryHash` (or `GENESIS_HASH`, 64 zeros, for the first entry) and
@@ -99,10 +110,10 @@ boundaries cannot be confused.
 Test vector (from `test/vectors.test.ts`): this record string
 
 ```
-{"createdAt":"2026-01-01T00:00:00.000Z","index":0,"payload":{"action":"report.created","by":"user_1"},"prevHash":"0000000000000000000000000000000000000000000000000000000000000000"}
+{"createdAt":"2026-01-01T00:00:00.000Z","formatVersion":"audit-chain-kit/v1","index":0,"payload":{"action":"report.created","by":"user_1"},"prevHash":"0000000000000000000000000000000000000000000000000000000000000000"}
 ```
 
-has `entryHash` `65e663a7038e462487c6626b4b5ed03dd7c7d58d37ff2e332c6e0f0aac77cd94`
+has `entryHash` `e2e95ac52a1f387f89f091b90d6a6caf1e2f68acffabe3b4243ed887acab76ca`
 (`printf '%s' '<record>' | shasum -a 256` gives the same value).
 
 If you reimplement the verifier in another language: keys are sorted by
@@ -143,10 +154,13 @@ Returns `Promise<{ valid: boolean; brokenAtIndex: number | null; reason: string 
 describing the first problem found.
 
 For each entry in order it checks that the entry is an object with string
-`prevHash` and `entryHash`; that `prevHash` equals the previous entry's
-`entryHash` (or `GENESIS_HASH`); that `entryHash` equals the recomputed hash
-of the entry minus `entryHash` (so a changed, added or removed field
-fails); and that `index` equals the position. A non-array `chain` returns
+`prevHash` and `entryHash`; that `formatVersion` equals `FORMAT_VERSION`
+exactly (a missing or different value fails here, with a reason naming
+`formatVersion`, before the hash is even recomputed); that `prevHash`
+equals the previous entry's `entryHash` (or `GENESIS_HASH`); that
+`entryHash` equals the recomputed hash of the entry minus `entryHash` (so a
+changed, added or removed field fails); and that `index` equals the
+position. A non-array `chain` returns
 `{ valid: false, brokenAtIndex: null, reason: "chain is not an array" }`.
 
 `options`:
@@ -196,6 +210,13 @@ missing. Tested on Node 20, 22, 24 and 26; other runtimes that expose
 
 `"0".repeat(64)`: the `prevHash` of the first entry of every chain.
 
+### `FORMAT_VERSION`
+
+`"audit-chain-kit/v1"`: the fixed tag `appendEntry` writes into every
+entry's `formatVersion` field, and the only value `verifyChain` accepts
+there. Compare against it if you write your own tooling around stored
+chains.
+
 ### `sha256HexNodeFallback(input)` from `audit-chain-kit/hash-node-fallback`
 
 Same contract and same output as `sha256Hex` (tested, including non-ASCII
@@ -213,8 +234,8 @@ console.log((await verifyChain(chain, undefined, { hash: sha256HexNodeFallback }
 
 ### Types
 
-`ChainRecord<T>` (`index`, `payload`, `prevHash`, `createdAt`),
-`ChainEntry<T>` (a record plus `entryHash`), `ChainAnchor`
+`ChainRecord<T>` (`formatVersion`, `index`, `payload`, `prevHash`,
+`createdAt`), `ChainEntry<T>` (a record plus `entryHash`), `ChainAnchor`
 (`{ index, entryHash }`), `Canonicalizer` (`(value: unknown) => string`),
 `Hasher` (`(input: string) => Promise<string>`), `VerifyOptions` and
 `VerifyResult`.
@@ -236,27 +257,20 @@ console.log((await verifyChain(chain, undefined, { hash: sha256HexNodeFallback }
   ways as `JSON.stringify` (`NaN` becomes `null`, a `Map` becomes `{}`,
   `undefined` fields disappear). Convert such values yourself if they
   matter.
-- **No version tag in the hash input.** Changing the record format or the
-  canonicalizer changes every hash; there is no field that says which
-  format a chain uses.
+- **A format tag, not a migration path.** Every entry's hash includes
+  `formatVersion: "audit-chain-kit/v1"`, so a future format change gets a
+  new tag instead of quietly producing hashes that look like this one, and
+  `verifyChain` rejects a chain written with a missing or different
+  `formatVersion`. There is no reader that accepts multiple format versions
+  or migrates an old chain forward; that would be new code, not written
+  here. Changing the record fields or the canonicalizer still changes every
+  hash, tag or no tag.
 - **Custom canonicalizers.** Both hashers encode a lone surrogate as U+FFFD,
   so `"\ud800"` and `"\ufffd"` hash the same. `canonicalJSON` escapes lone
   surrogates, so this only matters if your canonicalizer emits them.
 - **Cost and size.** `verifyChain` rehashes every entry from 0 on every
   call. Very deeply nested payloads overflow the call stack (on Node 26,
   1,000 levels worked and 5,000 threw a `RangeError`).
-
-## reference-impl
-
-`reference-impl/postgres-advisory-lock-append.sql` shows one way to stop two
-concurrent appends from forking a Postgres-backed chain: a
-transaction-scoped advisory lock (`pg_advisory_xact_lock`) held across the
-"read the last hash" query and the insert, plus a unique `(chain_id, idx)`
-constraint. It is **not** compatible with `verifyChain`: it hashes
-`sha256(prev_hash || canonical_json)` instead of the record format above,
-does not hash `idx`, `chain_id` or `created_at`, and does not store the
-hashed bytes. It is not tested in this repository and is not included in
-the package. Read it as an illustration of the locking pattern only.
 
 ## Where this came from
 

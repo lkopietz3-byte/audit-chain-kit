@@ -4,9 +4,36 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-09-27
+
+### Added
+
+- CommonJS `require()` support: a `"default"` condition next to `"import"`
+  on every `exports` entry (root and `./hash-node-fallback`), pointing at
+  the same built file. Proven against the packed tarball with `require()`
+  on Node 26.3.0, and guarded in CI on Node 20, 22, and 24 by an extended
+  `scripts/verify-package.mjs`.
+- README: a "Relationship to sibling kits" section linking to
+  [agent-receipt-kit](https://github.com/lkopietz3-byte/agent-receipt-kit) —
+  a receipt-verification result can be appended to a chain built with this
+  package for a tamper-evident record of what an agent claimed and when.
+
+### Fixed
+
+- Shipped `.js.map` files now inline the original TypeScript source
+  (`inlineSources` in `tsconfig.build.json`), so they resolve without the
+  unshipped `src/` directory. `.d.ts.map` generation is now disabled instead
+  of shipping a source map with an unresolvable `../src/*.ts` path; the
+  `.d.ts` declaration files themselves are unaffected.
+
+### Changed
+
+- README: replaced "ESM only" with an accurate statement that `require()`
+  also works on Node versions that support `require(esm)`.
+
 ## [0.1.0] - 2026-09-27
 
-First release. Not published to npm; install from GitHub.
+First release.
 
 ### Added
 

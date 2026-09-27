@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 import { appendEntry, verifyChain, GENESIS_HASH } from "../src/index.js";
 import type { ChainEntry } from "../src/index.js";
 
-async function buildValidChain(): Promise<ChainEntry<{ note: string }>[]> {
-  let chain: ChainEntry<{ note: string }>[] = [];
+async function buildValidChain(): Promise<readonly ChainEntry<{ note: string }>[]> {
+  let chain: readonly ChainEntry<{ note: string }>[] = [];
   chain = await appendEntry(chain, { note: "genesis event" });
   chain = await appendEntry(chain, { note: "second event" });
   chain = await appendEntry(chain, { note: "third event" });
@@ -33,22 +33,40 @@ describe("appendEntry", () => {
     expect(next).not.toBe(original);
   });
 
-  it("returns a frozen array of frozen entries", async () => {
+  it("returns a frozen array of frozen entries, typed readonly", async () => {
     const chain = await appendEntry([], { note: "a" });
     expect(Object.isFrozen(chain)).toBe(true);
     expect(Object.isFrozen(chain[0])).toBe(true);
+    // The types must say what the runtime does: these compile only if the
+    // return type is readonly (`npm run typecheck` fails otherwise).
+    // @ts-expect-error the returned array is readonly, matching Object.freeze
+    const asMutable: ChainEntry<{ note: string }>[] = chain;
+    expect(() => asMutable.push(chain[0]!)).toThrow(TypeError);
+    // @ts-expect-error entries are frozen
+    expect(() => { chain[0]!.index = 9; }).toThrow(TypeError);
+  });
+
+  it("does not copy or freeze the payload: mutating it afterwards breaks verification", async () => {
+    const payload = { note: "a" };
+    const chain = await appendEntry([], payload);
+    expect(chain[0]!.payload).toBe(payload);
+    expect(Object.isFrozen(payload)).toBe(false);
+    payload.note = "changed later";
+    expect((await verifyChain(chain)).valid).toBe(false);
   });
 
   it("is deterministic: same payload sequence (with a fixed clock) hashes identically", async () => {
-    const realDateNow = Date.prototype.toISOString;
-    // Pin createdAt so both runs hash identical records.
-    Date.prototype.toISOString = () => "2026-01-01T00:00:00.000Z";
+    // Pin createdAt so both runs hash identical records. Only Date is faked;
+    // timers and microtasks stay real so Web Crypto promises still resolve.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
     try {
       const a = await appendEntry(await appendEntry([], { x: 1 }), { x: 2 });
       const b = await appendEntry(await appendEntry([], { x: 1 }), { x: 2 });
+      expect(a[1]!.createdAt).toBe("2026-01-01T00:00:00.000Z");
       expect(a[1]!.entryHash).toBe(b[1]!.entryHash);
     } finally {
-      Date.prototype.toISOString = realDateNow;
+      vi.useRealTimers();
     }
   });
 });
@@ -87,6 +105,30 @@ describe("verifyChain — mutated payload", () => {
 
     const result = await verifyChain(tampered);
     expect(result.brokenAtIndex).toBe(2);
+  });
+});
+
+describe("verifyChain — persistence round trip", () => {
+  const jsonRoundTrip = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+  it("still verifies after a JSON round trip when a payload has undefined fields", async () => {
+    type Payload = { note: string; optional?: string | undefined; list?: (number | undefined)[] };
+    let chain = await appendEntry<Payload>([], { note: "a", optional: undefined });
+    chain = await appendEntry<Payload>(chain, { note: "b", list: [1, undefined, 3] });
+    expect(await verifyChain(jsonRoundTrip(chain))).toEqual({ valid: true, brokenAtIndex: null, reason: null });
+  });
+
+  it("still verifies after a JSON round trip when a payload holds a Date", async () => {
+    const chain = await appendEntry([], { at: new Date("2020-01-02T03:04:05.000Z") });
+    expect((await verifyChain(jsonRoundTrip(chain))).valid).toBe(true);
+  });
+
+  it("detects a changed Date inside a payload", async () => {
+    const chain = await appendEntry([], { at: new Date("2020-01-02T03:04:05.000Z") });
+    const tampered = [{ ...chain[0]!, payload: { at: new Date("1999-01-01T00:00:00.000Z") } }];
+    const result = await verifyChain(tampered);
+    expect(result.valid).toBe(false);
+    expect(result.brokenAtIndex).toBe(0);
   });
 });
 
@@ -138,15 +180,14 @@ describe("Web Crypto only in the core path", () => {
   // appearing in a doc comment explaining why the file doesn't have one.
   const NODE_CRYPTO_IMPORT = /(?:from\s+["']node:crypto["']|require\(\s*["']node:crypto["']\s*\))/;
 
-  it("hash.ts contains no node:crypto import statement", () => {
-    const src = readFileSync(fileURLToPath(new URL("../src/hash.ts", import.meta.url)), "utf8");
-    expect(src).not.toMatch(NODE_CRYPTO_IMPORT);
-  });
-
-  it("chain.ts (append + verify) contains no node:crypto import statement", () => {
-    const src = readFileSync(fileURLToPath(new URL("../src/chain.ts", import.meta.url)), "utf8");
-    expect(src).not.toMatch(NODE_CRYPTO_IMPORT);
-  });
+  it.each(["hash.ts", "chain.ts", "canonicalize.ts", "types.ts", "index.ts"])(
+    "%s contains no node:crypto import statement",
+    (file) => {
+      const src = readFileSync(fileURLToPath(new URL(`../src/${file}`, import.meta.url)), "utf8");
+      expect(src).not.toMatch(NODE_CRYPTO_IMPORT);
+      expect(src).not.toMatch(/from\s+["']node:/); // no Node built-in of any kind
+    },
+  );
 
   it("index.ts does not re-export the Node fallback (opt-in only)", () => {
     const src = readFileSync(fileURLToPath(new URL("../src/index.ts", import.meta.url)), "utf8");

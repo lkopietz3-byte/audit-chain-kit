@@ -100,6 +100,29 @@ console.log(JSON.stringify(out));
 `);
 const surface = JSON.parse(run(process.execPath, ['surface.mjs'], consumer));
 
+// 4b. CommonJS require() works for every exports entry ----------------------
+// Proves the "default" condition added next to "import" lets a CommonJS
+// consumer require() the package on Node versions that support require(esm)
+// (20.19+, 22.12+). A .cjs file is always parsed as CommonJS regardless of
+// the consumer package.json's "type", so this needs no separate project.
+writeFileSync(join(consumer, 'require-surface.cjs'), `
+const assert = require('node:assert/strict');
+const out = {};
+for (const spec of ${JSON.stringify(entries)}) {
+  const mod = require(spec);
+  const keys = Object.keys(mod).sort();
+  assert.ok(keys.length > 0, \`require(\${spec}) returned no exports\`);
+  out[spec] = keys;
+}
+console.log(JSON.stringify(out));
+`);
+const requireSurface = JSON.parse(run(process.execPath, ['require-surface.cjs'], consumer));
+assert.deepEqual(
+  requireSurface,
+  surface,
+  'require() and import() disagree on the exported names for one or more entries',
+);
+
 // 5. Public API surface is a deliberate diff ---------------------------------------
 const surfacePath = join(root, 'api-surface.json');
 const surfaceText = `${JSON.stringify(surface, null, 2)}\n`;

@@ -3,7 +3,8 @@
   "compilerOptions": {
     "noEmit": false,
     "declaration": true,
-    "declarationMap": true,
+    "inlineSources": true,
+    "declarationMap": false,
     "sourceMap": true,
     "outDir": "dist",
     "rootDir": "src"

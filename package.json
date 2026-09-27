@@ -54,7 +54,8 @@
     "lint": "eslint . --max-warnings=0",
     "audit:dependencies": "npm audit --package-lock-only --include=dev --ignore-scripts --audit-level=low",
     "verify:package": "node scripts/verify-package.mjs",
-    "verify": "npm run lint && npm run typecheck && npm test && npm run build && npm run verify:package"
+    "verify": "npm run lint && npm run typecheck && npm test && npm run build && npm run verify:package",
+    "prepublishOnly": "npm run verify"
   },
   "dependencies": {},
   "devDependencies": {

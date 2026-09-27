@@ -56,7 +56,10 @@ the same commit with a CHANGELOG entry.
 
 ## Release and rollback
 
-Not published. Before a first `npm publish`: run `npm run verify`, set the
-CHANGELOG date, tag `v0.1.0`. To roll back a bad release, deprecate the
-version (`npm deprecate`) and publish a fixed patch; do not unpublish a
-version that others may have used to write chains.
+`npm run verify` (lint, typecheck, test, build, verify:package) runs
+automatically before publish via the `prepublishOnly` script. Before the
+first `npm publish`: set the CHANGELOG date, tag `v0.1.0`. To roll back a
+bad release, deprecate the version (`npm deprecate`) and publish a fixed
+patch. npm allows `npm unpublish` only within 72 hours of publishing — even
+inside that window, avoid it here since others may already have used the
+version to write chains.

@@ -6,7 +6,7 @@ Mapped on **2026-09-26** from connected GitHub, Vercel, and Supabase metadata. T
 
 - Repository: [lkopietz3-byte/audit-chain-kit](https://github.com/lkopietz3-byte/audit-chain-kit)
 - Purpose: A dependency-free library for append-only hash-chained audit logs, with a verifier intended for independent third-party use.
-- GitHub visibility: **private**; default branch: **`main`**; archived: **no**.
+- GitHub visibility: **public**; default branch: **`main`**; archived: **no**.
 - Product stage, owner, production health, and GitHub protection/settings beyond the fields above: **not verified**.
 
 ## Starting points

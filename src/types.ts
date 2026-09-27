@@ -8,6 +8,13 @@
 
 /** The fields bound into an entry's hash: everything except `entryHash` itself. */
 export interface ChainRecord<TPayload = unknown> {
+  /**
+   * Format-and-domain tag; must equal {@link FORMAT_VERSION} exactly.
+   * `appendEntry` always writes the current `FORMAT_VERSION`. `verifyChain`
+   * checks this before recomputing the hash and rejects a missing or
+   * different value with a clear reason (it does not throw).
+   */
+  formatVersion: string;
   /** Position of this entry in the chain, starting at 0. `verifyChain` checks it. */
   index: number;
   /**
@@ -50,6 +57,17 @@ export type Hasher = (input: string) => Promise<string>;
 
 /** `prevHash` of the first entry in every chain: 64 zeros (not the hash of anything). */
 export const GENESIS_HASH = "0".repeat(64);
+
+/**
+ * Format-and-domain tag hashed into every entry, as the `formatVersion`
+ * field. Two purposes: a future change to the record shape or the
+ * canonicalizer gets a new tag instead of silently producing hashes that
+ * look like this format but are not, and an `entryHash` computed by this
+ * package can never be mistaken for a digest some other hash-chain library
+ * produced from the same bytes. `verifyChain` rejects any entry whose
+ * `formatVersion` is missing or not exactly this string.
+ */
+export const FORMAT_VERSION = "audit-chain-kit/v1";
 
 /**
  * A checkpoint of a chain: the `entryHash` of the entry at `index`. Any

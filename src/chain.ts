@@ -1,9 +1,9 @@
 import { canonicalJSON } from "./canonicalize.js";
 import { sha256Hex } from "./hash.js";
-import { GENESIS_HASH } from "./types.js";
+import { FORMAT_VERSION, GENESIS_HASH } from "./types.js";
 import type { Canonicalizer, ChainAnchor, ChainEntry, Hasher, VerifyOptions, VerifyResult } from "./types.js";
 
-export { GENESIS_HASH } from "./types.js";
+export { FORMAT_VERSION, GENESIS_HASH } from "./types.js";
 export type {
   ChainAnchor,
   ChainEntry,
@@ -21,9 +21,10 @@ export type {
  * will fail verification.
  *
  * The new entry is
- * `{ index, payload, prevHash, createdAt, entryHash }` where
- * `entryHash = hash(canonicalize({ index, payload, prevHash, createdAt }))`,
- * `index = chain.length`, `prevHash` is the last entry's `entryHash` (or
+ * `{ formatVersion, index, payload, prevHash, createdAt, entryHash }` where
+ * `entryHash = hash(canonicalize({ formatVersion, index, payload, prevHash, createdAt }))`,
+ * `formatVersion` is always the current {@link FORMAT_VERSION}, `index =
+ * chain.length`, `prevHash` is the last entry's `entryHash` (or
  * {@link GENESIS_HASH} for an empty chain) and `createdAt` is
  * `new Date().toISOString()`. `prevHash` is a field of the hashed record, so
  * with `canonicalJSON` field boundaries are unambiguous.
@@ -62,6 +63,7 @@ export async function appendEntry<TPayload = unknown>(
   }
 
   const record = {
+    formatVersion: FORMAT_VERSION,
     index: chain.length,
     payload,
     prevHash,
@@ -78,11 +80,15 @@ export async function appendEntry<TPayload = unknown>(
  * Recompute and check every link and hash in a chain, from genesis.
  *
  * Checks, for each entry in order: it is an object with string `prevHash`
- * and `entryHash`; `prevHash` equals the previous entry's `entryHash` (or
- * {@link GENESIS_HASH}); `entryHash` equals the hash of the canonicalized
- * entry minus `entryHash` (so any added, removed or changed field fails); and
- * `index` equals its position. Then the optional `expectedMinLength` and
- * `anchor` checks. Returns the first failure found.
+ * and `entryHash`; its `formatVersion` is exactly the current
+ * {@link FORMAT_VERSION} (a missing or different value is rejected with a
+ * specific reason, not thrown, and checked before the hash so a version
+ * mismatch is never reported as generic content tampering); `prevHash`
+ * equals the previous entry's `entryHash` (or {@link GENESIS_HASH});
+ * `entryHash` equals the hash of the canonicalized entry minus `entryHash`
+ * (so any added, removed or changed field fails); and `index` equals its
+ * position. Then the optional `expectedMinLength` and `anchor` checks.
+ * Returns the first failure found.
  *
  * What a valid result means: the chain is internally consistent. It does
  * NOT mean nobody changed it. There is no secret key, so anyone who can edit
@@ -123,6 +129,18 @@ export async function verifyChain<TPayload = unknown>(
 
     if (!isObject(entry) || typeof entry["entryHash"] !== "string" || typeof entry["prevHash"] !== "string") {
       return { valid: false, brokenAtIndex: i, reason: `entry ${i} is not an object with string prevHash and entryHash` };
+    }
+
+    const formatVersion = entry["formatVersion"];
+    if (formatVersion !== FORMAT_VERSION) {
+      return {
+        valid: false,
+        brokenAtIndex: i,
+        reason:
+          formatVersion === undefined
+            ? `entry ${i} has no formatVersion; this verifier requires ${JSON.stringify(FORMAT_VERSION)}`
+            : `entry ${i} has formatVersion ${JSON.stringify(formatVersion)}; this verifier requires ${JSON.stringify(FORMAT_VERSION)}`,
+      };
     }
 
     if (entry["prevHash"] !== expectedPrev) {

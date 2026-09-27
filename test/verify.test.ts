@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendEntry, canonicalJSON, GENESIS_HASH, sha256Hex, verifyChain } from "../src/index.js";
+import { appendEntry, canonicalJSON, FORMAT_VERSION, GENESIS_HASH, sha256Hex, verifyChain } from "../src/index.js";
 import type { ChainEntry, VerifyOptions } from "../src/index.js";
 
 type Note = { n: number | string };
@@ -10,9 +10,25 @@ async function chainOf(count: number): Promise<readonly ChainEntry<Note>[]> {
   return chain;
 }
 
-/** Build an entry by hand with correct hashes, whatever its fields say. */
-async function forgeEntry(record: { index: unknown; payload: unknown; prevHash: string; createdAt: string }) {
-  return { ...record, entryHash: await sha256Hex(canonicalJSON(record)) } as unknown as ChainEntry<Note>;
+/**
+ * Build an entry by hand with correct hashes, whatever its fields say.
+ * Defaults `formatVersion` to the current {@link FORMAT_VERSION} so tests
+ * that forge an entry to probe something else (a bad index, a broken link)
+ * don't incidentally trip the format-version check. Pass `formatVersion:
+ * undefined` explicitly to build an entry with no formatVersion field at
+ * all (canonicalJSON drops undefined-valued fields, same as an entry
+ * hashed by pre-v1 code), or a different string to build one for another
+ * format version.
+ */
+async function forgeEntry(record: {
+  formatVersion?: unknown;
+  index: unknown;
+  payload: unknown;
+  prevHash: string;
+  createdAt: string;
+}) {
+  const full = { formatVersion: FORMAT_VERSION, ...record };
+  return { ...full, entryHash: await sha256Hex(canonicalJSON(full)) } as unknown as ChainEntry<Note>;
 }
 
 const VALID = { valid: true, brokenAtIndex: null, reason: null };
@@ -72,6 +88,41 @@ describe("verifyChain: index must equal position", () => {
   it("rejects a string index even when it hashes correctly", async () => {
     const forged = await forgeEntry({ index: "0", payload: { n: 0 }, prevHash: GENESIS_HASH, createdAt: "2026-01-01T00:00:00.000Z" });
     expect(await verifyChain([forged])).toMatchObject({ valid: false, brokenAtIndex: 0 });
+  });
+});
+
+describe("verifyChain: formatVersion", () => {
+  it("rejects an entry hashed with no formatVersion field (pre-v1 format) without throwing", async () => {
+    const preV1 = await forgeEntry({
+      formatVersion: undefined,
+      index: 0,
+      payload: { n: 0 },
+      prevHash: GENESIS_HASH,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const result = await verifyChain([preV1]);
+    expect(result).toMatchObject({ valid: false, brokenAtIndex: 0 });
+    expect(result.reason).toMatch(/no formatVersion/);
+  });
+
+  it("rejects an entry with a different (but internally self-consistent) formatVersion, without throwing", async () => {
+    const otherVersion = await forgeEntry({
+      formatVersion: "audit-chain-kit/v2",
+      index: 0,
+      payload: { n: 0 },
+      prevHash: GENESIS_HASH,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    const result = await verifyChain([otherVersion]);
+    expect(result).toMatchObject({ valid: false, brokenAtIndex: 0 });
+    expect(result.reason).toMatch(/formatVersion "audit-chain-kit\/v2"/);
+    expect(result.reason).toMatch(new RegExp(FORMAT_VERSION.replace(/\//, "\\/")));
+  });
+
+  it("accepts entries appendEntry actually stamps", async () => {
+    const chain = await chainOf(2);
+    for (const e of chain) expect(e.formatVersion).toBe(FORMAT_VERSION);
+    expect(await verifyChain(chain)).toEqual(VALID);
   });
 });
 

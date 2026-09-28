@@ -85,6 +85,10 @@ not, even after an unpublish. Treat unpublish as unavailable: prefer fixing forw
 patch version, and use `npm deprecate <name>@"<range>" "<message>"` to warn consumers off a
 bad release while it stays installable for anyone already pinned to it.
 
+Chains reference specific published versions by their exact bytes; avoid unpublishing
+here even in the rare case the policy above would technically allow it, since another
+user's chain may already depend on that exact release.
+
 ### Runtime support policy
 
 - **Supported (recommended for production):** Node 22 and 24 LTS; Node 26 current.

@@ -31,6 +31,14 @@ describe("verifyChain: an entry that is not a usable object", () => {
     expect(result).toEqual({ valid: false, brokenAtIndex: 1, reason: shape(1) });
   });
 
+  it("rejects an entry whose prevHash is inherited rather than an own field", async () => {
+    const e0 = await one();
+    const inherited = Object.assign(Object.create({ prevHash: e0.prevHash }) as object, { ...e0, prevHash: undefined });
+    delete (inherited as { prevHash?: unknown }).prevHash;
+    const result = await verifyChain([inherited] as unknown as ChainEntry<Note>[]);
+    expect(result).toEqual({ valid: false, brokenAtIndex: 0, reason: shape(0) });
+  });
+
   it("reports a bad first entry at index 0", async () => {
     expect(await verifyChain([{}] as unknown as ChainEntry<Note>[])).toEqual({ valid: false, brokenAtIndex: 0, reason: shape(0) });
   });

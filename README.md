@@ -6,8 +6,8 @@ previous entry's hash, and `verifyChain` recomputes every hash from the
 first entry. The verifier uses only Web Crypto, so someone checking a chain
 does not have to run your code or trust your server to recompute it.
 
-Ships as ESM; `require()` also works on Node versions that support
-`require(esm)` (20.19+, 22.12+). Node 20 or later. MIT licensed.
+MIT licensed. See [Install](#install) for supported Node versions and how to
+load it from CommonJS.
 
 ## What "tamper-evident" means here
 
@@ -53,7 +53,23 @@ npm install audit-chain-kit
 ```
 
 Or build from source: clone the repository and run
-`npm install && npm run build`.
+`npm install && npm run build`. The behavior described below is version 0.2.0;
+[CHANGELOG.md](CHANGELOG.md) lists what changed from 0.1.1.
+
+This is an ESM package (`"type": "module"`). ESM and CommonJS consumers work
+like this:
+
+| How you load it | Works on | Notes |
+| --- | --- | --- |
+| `import` (ESM) | Node 20, 22, 24, 26 | The normal way. |
+| `require()` (CommonJS) | Node 20.19+ and 22.12+ (and later) | Uses Node's `require(esm)`. On an older Node, use dynamic `import()`. |
+| TypeScript, `moduleResolution` `node10`, `node16`/`nodenext` or `bundler` | TypeScript 5.x | Checked by `attw` and by a consumer probe in CI. |
+
+Node 22 and 24 (LTS) are recommended for production and Node 26 is current.
+Node 20 is end-of-life: it is tested for compatibility only (CI runs the tests
+and the installed-package probe on 20.19.0 and 22.12.0, the `require(esm)`
+floors) and gets no upstream security fixes. `engines` in `package.json` is
+`>=20`.
 
 ## Quickstart
 
@@ -132,18 +148,26 @@ Returns `Promise<readonly Readonly<ChainEntry<T>>[]>`: a new frozen array
 with one new frozen entry at the end. Does not mutate `chain`.
 
 - `chain`: the whole existing chain, or `[]`. Only the last entry is
-  inspected (the chain is not re-verified).
+  inspected (the chain is not re-verified). The array's length, its entries
+  and the last entry's `entryHash` and `index` are read once, before the first
+  `await`, and the result is built from that copy. Pushing to, truncating or
+  replacing entries in `chain` while the hash is pending does not change what
+  is returned. Entries are shared, not copied, and a hole in a sparse array
+  becomes an `undefined` element that `verifyChain` then rejects at its index.
 - `payload`: any value `canonicalJSON` accepts. It is stored by reference
   and not frozen, so mutating it afterwards makes the entry fail
   verification. Clone it first if you reuse the object.
 - `canonicalize`: defaults to `canonicalJSON`. Use the same one for every
-  append and verify of a chain.
-- `hash`: defaults to `sha256Hex`.
+  append and verify of a chain. It must be synchronous and return a string.
+- `hash`: defaults to `sha256Hex`. It must resolve to a string.
 
-Throws a `TypeError` if `chain` is not an array or its last entry has no
-string `entryHash`, and a `RangeError` if the last entry's `index` is not
-its position (for example, you passed only the tail). Errors from
-`canonicalize` or `hash` propagate.
+Throws a `TypeError` if `chain` is not an array, its last entry has no
+string `entryHash`, `canonicalize` or `hash` is not a function, or either
+returns the wrong type (for example a hasher that resolves to `undefined`,
+which would otherwise be stored as an entry with no hash). It throws a
+`RangeError` if the last entry's `index` is not its position (for example,
+you passed only the tail). Errors thrown by `canonicalize` or `hash`
+propagate.
 
 ### `verifyChain(chain, canonicalize?, options?)`
 
@@ -158,20 +182,48 @@ equals the previous entry's `entryHash` (or `GENESIS_HASH`); that
 `entryHash` equals the recomputed hash of the entry minus `entryHash` (so a
 changed, added or removed field fails); and that `index` equals the
 position. A non-array `chain` returns
-`{ valid: false, brokenAtIndex: null, reason: "chain is not an array" }`.
+`{ valid: false, brokenAtIndex: null, reason: "chain is not an array" }`, and
+so does an array-like whose `length` is not a non-negative integer.
 
-`options`:
+**The result describes the chain as it was when you called.** Before the first
+`await`, `verifyChain` reads the options, the anchor's `index` and `entryHash`,
+the array's length and entries, and a shallow copy of each entry's fields.
+Everything after that, including the anchor comparison, uses only that copy:
+the anchor is compared with the `entryHash` that was recomputed and matched,
+never with a value read again after an `await`. Pushing to, truncating or
+replacing entries, or editing an entry's fields or the anchor object, while a
+hash is pending does not change the result. The copy is shallow: each entry's
+`payload` is read by reference when that entry is canonicalized, so editing a
+payload in place during the call can still change the outcome for that entry.
+Do not mutate a chain you are verifying. A hole in a sparse array is an invalid
+entry, and nothing after the first entry that is not an object is read.
+
+Reasons that include a value from the chain (a `formatVersion` or `index`
+that is not what was expected) name the value safely. A string is quoted and
+cut at 80 characters, and control, line-break, bidirectional and other
+invisible format characters are written as `\uXXXX`, so a stored value cannot
+add a line or send a terminal escape. A BigInt is `1n`. An object, symbol or
+function is named ("an object"), never serialized, so a cyclic object or a
+throwing `toJSON` cannot break the report. `brokenAtIndex` and the reason
+still say which entry is wrong.
+
+`options` (`undefined` or a plain object with only these keys):
 
 - `expectedMinLength`: a non-negative integer. A shorter chain is invalid.
   This only catches entries deleted from the end if nobody appended new
   ones afterwards; anyone can append.
 - `anchor`: `{ index, entryHash }` (any `ChainEntry` fits). The chain must
-  have an entry at `anchor.index` with exactly that `entryHash`.
+  have an entry at `anchor.index` with exactly that `entryHash`. `entryHash`
+  must not be blank (empty, or only whitespace and invisible characters).
 - `hash`: the hash function used to append. Defaults to `sha256Hex`.
 
-A malformed `expectedMinLength` or `anchor` throws a `TypeError` (a bug in
-the caller, not a property of the chain). Errors from `canonicalize` or
-`hash` propagate.
+These throw a `TypeError` (a bug in the caller, not a property of the chain):
+`options` that is not a plain object, an unknown option key (so a typo, or an
+anchor passed where the options belong, cannot silently skip the anchor
+check), a malformed `expectedMinLength` or `anchor`, a `canonicalize` or `hash`
+that is not a function, a `canonicalize` that does not return a string, or a
+`hash` that does not resolve to one. Errors thrown by `canonicalize` or `hash`
+propagate.
 
 | Change to the stored chain | Without anchor | With anchor at the old last entry |
 | --- | --- | --- |
@@ -265,30 +317,41 @@ console.log((await verifyChain(chain, undefined, { hash: sha256HexNodeFallback }
 - **Custom canonicalizers.** Both hashers encode a lone surrogate as U+FFFD,
   so `"\ud800"` and `"\ufffd"` hash the same. `canonicalJSON` escapes lone
   surrogates, so this only matters if your canonicalizer emits them.
+- **Mutating a chain during a call.** `verifyChain` and `appendEntry` decide
+  from a copy of the array and of each entry's fields taken before their first
+  `await`, so changes to the array, entries or anchor during the call cannot
+  change the result. Payloads are not deep-copied: they are read by reference
+  when canonicalized, and the payload of an appended entry is stored by
+  reference. The result says nothing about what the stored chain looks like
+  after the call returns. This is not a transaction and does not stop another
+  process from writing.
 - **Cost and size.** `verifyChain` rehashes every entry from 0 on every
-  call. Very deeply nested payloads overflow the call stack (on Node 26,
+  call, and holds one shallow copy of each entry while it runs (measured with
+  20,000 small entries on Node 26.3.0: about 216 ms before the snapshot change
+  and 217 ms after; one machine, not a benchmark suite). Very deeply nested payloads overflow the call stack (on Node 26,
   1,000 levels worked and 5,000 threw a `RangeError`).
 
 ## Relationship to sibling kits
 
 [agent-receipt-kit](https://github.com/lkopietz3-byte/agent-receipt-kit)
-checks whether an autonomous agent's self-reported claim about its own work
-matches what it was actually authorized and able to do; `verifyReceipt`
-returns a plain, JSON-serializable result
-(`{ accepted, unauthorizedActions, droppedEvidenceIds, contradictions,
-packetMismatch, reason }`). That result (or the `WorkPacket` it verified) can
-be passed directly as the `payload` to this package's `appendEntry`, giving
-each verification a tamper-evident position in a hash chain — so a later
-dispute about what an agent claimed, and when, can be checked against the
-chain instead of a mutable log. The two packages do not depend on each other;
-combining them is a matter of passing one library's plain output as the
-other's input.
+checks whether an autonomous agent's self-reported claim matches what it was
+authorized to do and what a caller-supplied observation shows. It does not know
+about hash chains, and this package does not know what a receipt is. The
+result of `verifyReceipt` (or the work packet it checked) is a natural payload
+for `appendEntry`, if it contains only values `canonicalJSON` can represent.
+The chain then lets anyone who holds it detect an edit to that record made
+without recomputing the hashes. It does not make an accepted receipt true (that
+kit says what `accepted` covers), it does not say who appended the entry, and
+`createdAt` is the appender's own clock. Neither package depends on the other;
+combining them is a matter of passing one library's plain output as the other's
+input.
 
 ## Where this came from
 
 Generalized from the audit log in the author's `forensic-report-tool`
-project, which uses the same record shape (`prevHash` as a hashed field,
-key-sorted canonical JSON). This is new code, not a copy of that file.
+project, which uses the same construction: `prevHash` is a hashed field, the
+canonical JSON has sorted keys, and `entryHash` is the SHA-256 of everything
+except `entryHash`. This is new code, not a copy of that file.
 
 ## Development
 

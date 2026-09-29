@@ -1,6 +1,6 @@
 {
   "name": "audit-chain-kit",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Build and verify SHA-256 hash chains over audit records, with a zero-dependency Web Crypto verifier and optional anchor checks.",
   "keywords": [
     "audit-log",

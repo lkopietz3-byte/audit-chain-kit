@@ -65,11 +65,8 @@ export async function appendEntry<TPayload = unknown>(
   let last: unknown;
   if (length > 0) {
     last = chain[length - 1];
-    if (!isObject(last)) {
-      throw new TypeError(`appendEntry: the last entry (position ${length - 1}) has no string entryHash`);
-    }
-    const lastEntryHash: unknown = last["entryHash"];
-    const lastIndex: unknown = last["index"];
+    const lastEntryHash: unknown = isObject(last) ? last["entryHash"] : undefined;
+    const lastIndex: unknown = isObject(last) ? last["index"] : undefined;
     if (typeof lastEntryHash !== "string") {
       throw new TypeError(`appendEntry: the last entry (position ${length - 1}) has no string entryHash`);
     }
@@ -349,7 +346,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function isIndex(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+  return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
 /** Empty, or only whitespace and Default_Ignorable_Code_Point characters (zero-width, bidi controls, fillers). */
@@ -393,8 +390,7 @@ function describe(value: unknown): string {
 }
 
 function describeString(value: string): string {
-  const shown = value.length > LONGEST_STRING ? value.slice(0, LONGEST_STRING) : value;
-  const quoted = JSON.stringify(shown).replace(UNSAFE_CHARACTER, (char) => {
+  const quoted = JSON.stringify(value.slice(0, LONGEST_STRING)).replace(UNSAFE_CHARACTER, (char) => {
     const code = char.codePointAt(0)!;
     return code > 0xffff ? `\\u{${code.toString(16)}}` : `\\u${code.toString(16).padStart(4, "0")}`;
   });

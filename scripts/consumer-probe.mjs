@@ -73,6 +73,36 @@ assert.equal(anchored.brokenAtIndex, 2);
 assert.deepEqual(await verifyChain(stored, undefined, { anchor }), VALID);
 await assert.rejects(verifyChain(stored, undefined, { expectedMinLength: Number.NaN }), TypeError);
 
+// Snapshot semantics: entries shortened while a hash is pending cannot hide a
+// corrupt tail, and an entryHash forged to the anchored value mid-verification
+// cannot pass the anchor check.
+{
+  const mutable = stored.map((e) => ({ ...e }));
+  mutable[2].payload = { action: 'TAMPERED' };
+  let calls = 0;
+  const shrinkWhileHashing = async (input) => {
+    calls += 1;
+    if (calls === 1) mutable.length = 1;
+    return sha256Hex(input);
+  };
+  const raced = await verifyChain(mutable, undefined, { hash: shrinkWhileHashing });
+  assert.equal(raced.valid, false);
+  assert.equal(raced.brokenAtIndex, 2);
+
+  const other = (await appendEntry([], { action: 'other' })).map((e) => ({ ...e }));
+  let paused = false;
+  const swapWhileHashing = async (input) => {
+    if (!paused) { paused = true; other[0].entryHash = stored[0].entryHash; }
+    return sha256Hex(input);
+  };
+  const forgedAnchor = await verifyChain(other, undefined, { anchor: { index: 0, entryHash: stored[0].entryHash }, hash: swapWhileHashing });
+  assert.equal(forgedAnchor.valid, false);
+}
+
+// A malformed formatVersion is reported, never thrown.
+const oddVersion = await verifyChain([{ ...stored[0], formatVersion: 1n }]);
+assert.deepEqual(oddVersion, { valid: false, brokenAtIndex: 0, reason: 'entry 0 has formatVersion 1n; this verifier requires "audit-chain-kit/v1"' });
+
 // appendEntry refuses a partial chain.
 await assert.rejects(appendEntry([stored[2]], { action: 'x' }), RangeError);
 

@@ -1,6 +1,6 @@
 {
   "name": "audit-chain-kit",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Build and verify SHA-256 hash chains over audit records, with a zero-dependency Web Crypto verifier and optional anchor checks.",
   "keywords": [
     "audit-log",
@@ -38,6 +38,13 @@
       "default": "./dist/hash-node-fallback.js"
     }
   },
+  "typesVersions": {
+    "*": {
+      "hash-node-fallback": [
+        "./dist/hash-node-fallback.d.ts"
+      ]
+    }
+  },
   "sideEffects": false,
   "files": [
     "dist",
@@ -56,7 +63,7 @@
     "lint": "eslint . --max-warnings=0",
     "audit:dependencies": "npm audit --package-lock-only --include=dev --ignore-scripts --audit-level=low",
     "verify:package": "node scripts/verify-package.mjs",
-    "attw": "attw --pack . --ignore-rules cjs-resolves-to-esm --profile node16",
+    "attw": "attw --pack . --ignore-rules cjs-resolves-to-esm",
     "verify": "npm run lint && npm run typecheck && npm test && npm run build && npm run verify:package",
     "prepublishOnly": "npm run verify"
   },

@@ -22,3 +22,13 @@ Build and verify SHA-256 hash chains over audit records, with a zero-dependency 
 - Do not run `npm publish` or push tags without explicit permission. Treat any claim that a version is published as Reported until the registry confirms it.
 - Runtime `dependencies` stay empty; add dev tooling only.
 - Keep unrelated uncommitted work intact; never stage or reset the whole tree.
+
+## Review preparation
+
+See [docs/REVIEW_READINESS.md](docs/REVIEW_READINESS.md) for milestone review cadence, declared verification gates and the next launch-preparation task.
+
+## Code Review Rules
+
+- Preserve v1 canonical bytes, version/genesis, previous-hash links, sequential indices and full hash recomputation. Any format change requires an explicit version, golden vectors and compatibility notes rather than silent drift.
+- A valid chain proves internal consistency only. An externally held index/entryHash anchor detects recomputed edits or truncation through that index; do not claim unanchored authenticity, immutable storage, signer identity or trustworthy timestamps.
+- Keep storage, concurrency and snapshot limits explicit. Shallow copies do not freeze nested payloads, and append does not serialize concurrent database writers; callers own durable storage, ordering and independent anchor custody.

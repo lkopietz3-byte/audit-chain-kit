@@ -1,5 +1,7 @@
 # audit-chain-kit
 
+**[Try it in your browser →](https://lkopietz3-byte.github.io/honesty-kits/#audit-chain-kit)** · Part of [honesty kits](https://github.com/lkopietz3-byte/honesty-kits), a family of small checks for the claims an AI product makes.
+
 Build and verify SHA-256 hash chains over audit records, in TypeScript,
 with zero runtime dependencies. Each entry's hash covers its content and the
 previous entry's hash, and `verifyChain` recomputes every hash from the

@@ -55,7 +55,7 @@ npm install audit-chain-kit
 ```
 
 Or build from source: clone the repository and run
-`npm install && npm run build`. The behavior described below is version 0.2.0;
+`npm install && npm run build`. The behavior described below is version 0.2.1;
 [CHANGELOG.md](CHANGELOG.md) lists what changed from 0.1.1.
 
 This is an ESM package (`"type": "module"`). ESM and CommonJS consumers work

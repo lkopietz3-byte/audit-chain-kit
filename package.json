@@ -1,6 +1,6 @@
 {
   "name": "audit-chain-kit",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Build and verify SHA-256 hash chains over audit records, with a zero-dependency Web Crypto verifier and optional anchor checks.",
   "keywords": [
     "audit-log",
@@ -10,7 +10,8 @@
     "web-crypto",
     "integrity",
     "verification",
-    "canonical-json"
+    "canonical-json",
+    "honesty-kits"
   ],
   "author": "Lucas Kopietz",
   "license": "MIT",
@@ -18,7 +19,7 @@
     "type": "git",
     "url": "git+https://github.com/lkopietz3-byte/audit-chain-kit.git"
   },
-  "homepage": "https://github.com/lkopietz3-byte/audit-chain-kit#readme",
+  "homepage": "https://lkopietz3-byte.github.io/honesty-kits/#audit-chain-kit",
   "bugs": {
     "url": "https://github.com/lkopietz3-byte/audit-chain-kit/issues"
   },

@@ -36,6 +36,12 @@ format and every existing verdict are unchanged.
   conflict, fails closed when the store is unavailable, throws or answers oddly) and
   **`createMemoryAppendStore`** (in-memory, for tests only). `GENESIS_HEAD` is the head
   of an empty chain.
+- The streaming verifier treats a position past 2^53 - 1 as a break (repeated
+  indexes after a maximal gap record could otherwise verify), reports a nesting-depth
+  failure inside a custom `canonicalize` as `status: "error"` rather than a break, and
+  `splitValidPrefix` keeps every readable row after the first break (an unreadable one
+  becomes `{ unreadable: true, arrayIndex }`). `appendToStore` returns `unavailable`
+  when a store's answer cannot be read, instead of rejecting.
 - **`docs/CANONICAL-FORM.md`**, the byte-level canonical form with worked examples that
   a test recomputes, and a Postgres recipe in the README (text only; no SQL or driver
   dependency).

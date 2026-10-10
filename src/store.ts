@@ -170,19 +170,24 @@ async function run<TPayload>(
   const said = (reason: unknown): string => (typeof reason === "string" ? `: ${describe(reason)}` : "");
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    // 1. Head and clock.
-    let read: unknown;
+    // 1. Head and clock. The answer is decoded inside the protected step, one read per field.
+    let head: ChainHead | undefined;
+    let now: unknown;
+    let notOk: AppendOutcome<TPayload> | undefined;
     try {
-      read = await (readHeadFn as () => Promise<unknown>).call(store);
+      const read: unknown = await (readHeadFn as () => Promise<unknown>).call(store);
+      const readStatus: unknown = isObject(read) ? read["status"] : undefined;
+      if (readStatus === "unavailable") {
+        notOk = unavailable(attempt, `the store is unavailable${said(isObject(read) ? read["reason"] : undefined)}`);
+      } else if (readStatus === "ok" && isObject(read)) {
+        const rawHead: unknown = read["head"];
+        now = read["now"];
+        head = readHead(rawHead);
+      }
     } catch (error) {
-      return unavailable(attempt, "the store threw while reading the head", error);
+      return unavailable(attempt, "the store threw or returned an unreadable answer while reading the head", error);
     }
-    const readStatus: unknown = isObject(read) ? read["status"] : undefined;
-    if (readStatus === "unavailable") {
-      return unavailable(attempt, `the store is unavailable${said(isObject(read) ? read["reason"] : undefined)}`);
-    }
-    const head = readStatus === "ok" && isObject(read) ? readHead(read["head"]) : undefined;
-    const now: unknown = readStatus === "ok" && isObject(read) ? read["now"] : undefined;
+    if (notOk !== undefined) return notOk;
     if (head === undefined || typeof now !== "string" || isBlank(now)) {
       return unavailable(attempt, "the store returned a malformed head (need { status: 'ok', head: { index, hash }, now: non-blank string })");
     }
@@ -194,19 +199,19 @@ async function run<TPayload>(
       entryOptions,
     )) as Readonly<ChainEntry<TPayload>>;
 
-    // 3. Conditional write.
-    let written: unknown;
+    // 3. Conditional write. If the answer cannot be read, the write may have committed: report unavailable, never appended.
+    let status: unknown;
+    let reason: unknown;
     try {
-      written = await (appendFn as (input: unknown) => Promise<unknown>).call(store, { expectedHead: head, entry });
+      const written: unknown = await (appendFn as (input: unknown) => Promise<unknown>).call(store, { expectedHead: head, entry });
+      status = isObject(written) ? written["status"] : undefined;
+      if (status === "unavailable") reason = isObject(written) ? written["reason"] : undefined;
     } catch (error) {
-      return unavailable(attempt, "the store threw while appending", error);
+      return unavailable(attempt, "the store threw or returned an unreadable answer while appending (the write may or may not have happened)", error);
     }
-    const status: unknown = isObject(written) ? written["status"] : undefined;
     if (status === "appended") return { status: "appended", entry, attempts: attempt };
     if (status === "conflict") continue;
-    if (status === "unavailable") {
-      return unavailable(attempt, `the store is unavailable${said(isObject(written) ? written["reason"] : undefined)}`);
-    }
+    if (status === "unavailable") return unavailable(attempt, `the store is unavailable${said(reason)}`);
     return unavailable(attempt, "the store returned an answer that is not appended, conflict or unavailable");
   }
   return { status: "conflict", attempts: maxAttempts };

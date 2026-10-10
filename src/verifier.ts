@@ -204,6 +204,10 @@ export function createChainVerifier(options?: ChainVerifierOptions): ChainVerifi
 
   const check = async (snap: Snap, pos: number): Promise<boolean> => {
     const entry = snap.entry;
+    if (!Number.isSafeInteger(pos)) {
+      // Past 2^53 - 1 integers repeat (2^53 + 1 is 2^53), so the position of the next entry is not well defined.
+      return broken(pos, `entry position ${describe(pos)} is past the largest safe integer (2^53 - 1), so the chain cannot continue`);
+    }
     if (entry.unusable !== undefined) {
       return broken(
         pos,
@@ -233,7 +237,8 @@ export function createChainVerifier(options?: ChainVerifierOptions): ChainVerifi
     try {
       canonical = canonicalize(entry.record);
     } catch (error) {
-      if (error instanceof NestingDepthError) {
+      // Only the built-in canonicalizer's depth error is evidence about the entry; a custom one may fail on its own values.
+      if (checkJson && error instanceof NestingDepthError) {
         return broken(pos, `entry ${pos} is nested deeper than ${MAX_NESTING_DEPTH} levels, which is not supported`);
       }
       if (checkJson) {
@@ -339,11 +344,27 @@ export function createChainVerifier(options?: ChainVerifierOptions): ChainVerifi
   };
 }
 
+/**
+ * Stands in, inside `SplitResult.rest`, for an element that threw when it was
+ * read (a getter or Proxy trap): `{ unreadable: true, arrayIndex }`, where
+ * `arrayIndex` is the element's position in the input array.
+ */
+export interface UnreadableEntry {
+  readonly unreadable: true;
+  readonly arrayIndex: number;
+}
+
+const unreadableEntry = (arrayIndex: number): UnreadableEntry => Object.freeze({ unreadable: true as const, arrayIndex });
+
 /** What {@link splitValidPrefix} returns. */
 export interface SplitResult<TPayload = unknown> {
   /** The longest verified prefix, as read from the input, in order. */
   readonly valid: ChainEntry<TPayload>[];
-  /** Everything from the first break on, as read from the input (empty when nothing broke). Not verified. */
+  /**
+   * Everything from the first break on, as read from the input, in order (empty
+   * when nothing broke). Not verified. An element that could not be read is an
+   * {@link UnreadableEntry}; holes in a sparse array are left out.
+   */
   readonly rest: unknown[];
   /** The first break, or `null` when every entry verified. `index` is `null` when the input was not a readable array. */
   readonly firstBreak: { readonly index: number | null; readonly reason: string } | null;
@@ -402,11 +423,22 @@ export async function splitValidPrefix<TPayload = unknown>(
     if (result.status === "error") {
       throw result.error instanceof Error ? result.error : new Error(result.reason ?? "verification failed");
     }
-    const rest: unknown[] = [item];
+    const rest: unknown[] = [item === unreadableElement() ? unreadableEntry(i) : item];
+    let keys: string[] = [];
     try {
-      for (const later of Array.prototype.slice.call(entries, i + 1) as unknown[]) rest.push(later);
+      keys = Object.keys(entries);
     } catch {
-      // The remainder could not be read; rest holds only the entry that broke.
+      // The remainder cannot be listed; rest holds only the entry that broke.
+    }
+    // Own index keys in ascending order, one read each, so a hole costs nothing and one bad element loses only itself.
+    for (const key of keys) {
+      const position = Number(key);
+      if (!Number.isSafeInteger(position) || position <= i || String(position) !== key) continue;
+      try {
+        rest.push(entries[position]);
+      } catch {
+        rest.push(unreadableEntry(position));
+      }
     }
     return { valid: valid as ChainEntry<TPayload>[], rest, firstBreak: { index: result.brokenAtIndex, reason: result.reason ?? "" } };
   }

@@ -396,6 +396,8 @@ const result = await verifier.finish();
   Leave it out to start at the beginning (`GENESIS_HEAD` is
   `{ index: -1, hash: GENESIS_HASH }`). A wrong `from` fails at the first
   entry. It only helps if you keep it somewhere the log's writer cannot change.
+- Positions stop at 2^53 - 1: after an entry at that index (a gap record can
+  reach it), the next entry is a break, because larger integers repeat.
 - Each entry is read once, by property descriptor, when you call `push`:
   getters, `toJSON` and Proxy traps are never run for you, and an entry that is
   not exactly its JSON form is a break (the same check `verifyChain` makes).
@@ -406,7 +408,10 @@ const result = await verifier.finish();
 `splitValidPrefix(entries, options?)` runs the same checks over an array and
 returns `{ valid, rest, firstBreak }`: the longest valid prefix, everything
 from the first break on (unverified), and `{ index, reason }` for the break or
-`null`. It is for repair tooling. It never changes its input.
+`null`. It is for repair tooling. It never changes its input. Every element is
+read once; one that throws when read (a getter, a Proxy trap) appears in `rest`
+as `{ unreadable: true, arrayIndex }` (type `UnreadableEntry`) instead of
+costing you the rows after it, and holes in a sparse array are left out.
 
 ### Marked gaps
 
@@ -455,7 +460,8 @@ once the attempts are used up, or `{ status: "unavailable", attempts, reason }`.
 It fails closed: a store that returns `unavailable`, throws, rejects or answers
 with anything unexpected gives `unavailable` and the entry is not reported as
 written. It does not retry an `unavailable` (the store could not say whether the
-write happened). A payload that is not plain JSON data throws, as in
+write happened). An answer that cannot be read (a getter or Proxy trap that
+throws) counts as `unavailable` too, on the head read and after the write. A payload that is not plain JSON data throws, as in
 `appendEntry`. The name differs from `appendEntry` because that one stays as it
 is.
 

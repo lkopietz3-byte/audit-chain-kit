@@ -1199,3 +1199,119 @@ describe("verdict table: scaling", () => {
     expect(big / small).toBeLessThan(8);
   });
 });
+
+describe("verdict table: review round (unsafe positions, suffix recovery, hostile store answers, custom canonicalizer depth)", () => {
+  const MAX = Number.MAX_SAFE_INTEGER;
+  const forgeAt = async (index: number, prevHash: string, payload: unknown): Promise<ChainEntry> => {
+    const record = { formatVersion: FORMAT_VERSION, index, payload, prevHash, createdAt: at(1) };
+    return { ...record, entryHash: await sha256Hex(canonicalJSON(record)) };
+  };
+
+  it("positions past 2^53 - 1 are a break: repeated index 2^53 after a maximal gap cannot pass", async () => {
+    const base = await honest(4);
+    const gap = await mk({ index: MAX, prevHash: base[3]!.entryHash, payload: gapPayload({ reason: "huge", from: 4, to: MAX - 1 }) });
+    const first = await forgeAt(MAX + 1, gap.entryHash, { n: 1 });
+    const second = await forgeAt(MAX + 1, first.entryHash, { n: 2 });
+    const third = await forgeAt(MAX + 1, second.entryHash, { n: 3 });
+    expect((await acrossPages([...base, gap], { allowMarkedGaps: true })).valid).toBe(true);
+    for (const rows of [[first], [first, second, third]]) {
+      const result = await acrossPages([...base, gap, ...rows], { allowMarkedGaps: true });
+      expect(result.valid).toBe(false);
+      expect(result.status).toBe("broken");
+    }
+  });
+
+  it("a from head at the largest safe index accepts nothing after it", async () => {
+    const from = { index: MAX, hash: "ab".repeat(32) };
+    const next = await forgeAt(MAX + 1, from.hash, {});
+    expect((await streamed([next], 1, { from })).valid).toBe(false);
+    expect((await streamed([], 1, { from })).valid).toBe(true);
+  });
+
+  it("splitValidPrefix keeps every readable row after the first break and marks unreadable ones", async () => {
+    const row1 = (await honest(2))[1]!;
+    const row2 = (await honest(3))[2]!;
+    const entries: unknown[] = [null, row1, undefined, row2];
+    Object.defineProperty(entries, 2, {
+      enumerable: true,
+      get() {
+        throw new Error("row 2 unreadable");
+      },
+    });
+    const split = await splitValidPrefix(entries);
+    expect(split.valid).toEqual([]);
+    expect(split.firstBreak).toMatchObject({ index: 0 });
+    expect(split.rest).toHaveLength(4);
+    expect(split.rest[0]).toBeNull();
+    expect(split.rest[1]).toBe(row1);
+    expect(split.rest[2]).toEqual({ unreadable: true, arrayIndex: 2 });
+    expect(split.rest[3]).toBe(row2);
+  });
+
+  it("splitValidPrefix marks the breaking element itself when it is unreadable", async () => {
+    const chain = await honest(3);
+    const entries: unknown[] = [chain[0], undefined, chain[2]];
+    Object.defineProperty(entries, 1, {
+      enumerable: true,
+      get() {
+        throw new Error("unreadable");
+      },
+    });
+    const split = await splitValidPrefix(entries);
+    expect(split.valid).toEqual([chain[0]]);
+    expect(split.rest).toEqual([{ unreadable: true, arrayIndex: 1 }, chain[2]]);
+  });
+
+  it("splitValidPrefix does not walk a huge sparse array hole by hole", async () => {
+    const sparse: unknown[] = [null];
+    sparse.length = 4_000_000_000;
+    const t0 = Date.now();
+    const split = await splitValidPrefix(sparse);
+    expect(split.firstBreak).toMatchObject({ index: 0 });
+    expect(Date.now() - t0).toBeLessThan(5000);
+  });
+
+  it("hostile store answers (getters that throw) are unavailable, never a rejection", async () => {
+    const inner = createMemoryAppendStore({ now: () => at(1) });
+    const boom = (field: string, rest: Record<string, unknown>): object =>
+      Object.defineProperty({ ...rest }, field, {
+        enumerable: true,
+        get() {
+          throw new Error(`${field} getter`);
+        },
+      });
+    const proxyThatThrows = new Proxy({}, { get() { throw new Error("trap"); } });
+    const goodHead = { status: "ok", head: GENESIS_HEAD, now: at(1) };
+    const headAnswers: unknown[] = [
+      boom("status", goodHead),
+      boom("head", goodHead),
+      boom("now", goodHead),
+      boom("reason", { status: "unavailable" }),
+      { status: "ok", head: boom("index", { hash: GENESIS_HASH }), now: at(1) },
+      proxyThatThrows,
+    ];
+    for (const answer of headAnswers) {
+      const store: AppendStore = { readHead: () => Promise.resolve(answer as never), appendIfHead: (i) => inner.appendIfHead(i) };
+      expect((await appendToStore(store, { x: 1 })).status).toBe("unavailable");
+    }
+    const appendAnswers: unknown[] = [boom("status", {}), boom("reason", { status: "unavailable" }), proxyThatThrows];
+    for (const answer of appendAnswers) {
+      const store: AppendStore = { readHead: () => inner.readHead(), appendIfHead: () => Promise.resolve(answer as never) };
+      const outcome = await appendToStore(store, { x: 1 });
+      expect(outcome.status).toBe("unavailable");
+    }
+  });
+
+  it("a custom canonicalizer that fails on a deep intermediate value gives status error, not a break", async () => {
+    const chain = await honest(3);
+    const canonicalize = (value: unknown): string => {
+      let deep: unknown = 1;
+      for (let i = 0; i < 300; i++) deep = { d: deep };
+      return canonicalJSON({ value, deep });
+    };
+    const verifier = createChainVerifier({ canonicalize });
+    await verifier.push(chain[0]);
+    expect(await verifier.finish()).toMatchObject({ status: "error", valid: false });
+    await expect(splitValidPrefix(chain, { canonicalize })).rejects.toThrow(RangeError);
+  });
+});

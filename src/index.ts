@@ -15,7 +15,7 @@ export type { ChainHead, ComputeEntryInput, ComputeEntryOptions } from "./comput
 export { gapPayload, MARKED_GAP_KIND, MAX_GAP_REASON_LENGTH } from "./gap.js";
 export type { GapPayload, MarkedGap } from "./gap.js";
 export { createChainVerifier, splitValidPrefix } from "./verifier.js";
-export type { ChainVerifier, ChainVerifierOptions, ChainVerifierResult, SplitResult } from "./verifier.js";
+export type { ChainVerifier, ChainVerifierOptions, ChainVerifierResult, SplitResult, UnreadableEntry } from "./verifier.js";
 export { appendGapToStore, appendToStore, createMemoryAppendStore } from "./store.js";
 export type {
   AppendOutcome,

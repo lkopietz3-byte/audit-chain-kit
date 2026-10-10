@@ -89,13 +89,14 @@ const last = chain[chain.length - 1];
 const anchor = { index: last.index, entryHash: last.entryHash };
 
 console.log(await verifyChain(JSON.parse(stored), undefined, { anchor }));
-// { valid: true, brokenAtIndex: null, reason: null }
+// { valid: true, brokenAtIndex: null, reason: null, entriesChecked: 2 }
 
 const tampered = JSON.parse(stored);
 tampered[0].payload.by = "user_2";
 console.log(await verifyChain(tampered, undefined, { anchor }));
 // { valid: false, brokenAtIndex: 0,
-//   reason: 'entry 0 content does not match its entryHash (a hashed field was changed, added, or removed after appending)' }
+//   reason: 'entry 0 content does not match its entryHash (a hashed field was changed, added, or removed after appending)',
+//   entriesChecked: 0 }
 ```
 
 ## How an entry is hashed
@@ -156,16 +157,24 @@ with one new frozen entry at the end. Does not mutate `chain`.
   replacing entries in `chain` while the hash is pending does not change what
   is returned. Entries are shared, not copied, and a hole in a sparse array
   becomes an `undefined` element that `verifyChain` then rejects at its index.
-- `payload`: any value `canonicalJSON` accepts. It is stored by reference
-  and not frozen, so mutating it afterwards makes the entry fail
-  verification. Clone it first if you reuse the object.
+- `payload`: plain JSON data. With the default canonicalizer it must be
+  exactly its own JSON form: strings, finite numbers, booleans, `null`, arrays
+  and plain objects, nested at most 255 levels deep. It is refused with a
+  `TypeError` (naming where) if it holds `undefined`, a function, a symbol, a
+  BigInt, `NaN` or `Infinity`, anything with a `toJSON` method (so a `Date`:
+  use `date.toISOString()`), a `Map`, `Set`, boxed primitive or class instance,
+  a getter, a symbol-keyed or non-enumerable property, an array with holes or
+  extra properties, or a cycle. Otherwise the object you hold would not be the
+  object that was hashed. A custom `canonicalize` is not checked. The payload
+  is stored by reference and not frozen, so mutating it afterwards makes the
+  entry fail verification. Clone it first if you reuse the object.
 - `canonicalize`: defaults to `canonicalJSON`. Use the same one for every
   append and verify of a chain. It must be synchronous and return a string.
 - `hash`: defaults to `sha256Hex`. It must resolve to a string.
 
 Throws a `TypeError` if `chain` is not an array, its last entry has no
-string `entryHash`, `canonicalize` or `hash` is not a function, or either
-returns the wrong type (for example a hasher that resolves to `undefined`,
+string `entryHash`, the payload is not plain JSON data (default canonicalizer
+only), `canonicalize` or `hash` is not a function, or either returns the wrong type (for example a hasher that resolves to `undefined`,
 which would otherwise be stored as an entry with no hash). It throws a
 `RangeError` if the last entry's `index` is not its position (for example,
 you passed only the tail). Errors thrown by `canonicalize` or `hash`
@@ -173,8 +182,16 @@ propagate.
 
 ### `verifyChain(chain, canonicalize?, options?)`
 
-Returns `Promise<{ valid: boolean; brokenAtIndex: number | null; reason: string | null }>`
+Returns `Promise<{ valid: boolean; brokenAtIndex: number | null; reason: string | null; entriesChecked: number }>`
 describing the first problem found.
+
+`entriesChecked` is how many entries were fully checked (link, hash and index)
+before the result was decided: the whole chain when `valid` is `true`, the
+entries before the first failing one otherwise, and `0` for a chain that is not
+an array. **An empty chain is `valid: true` with `entriesChecked: 0`.** Nothing
+was verified, so a result for a log that should have entries is only evidence
+when `entriesChecked` is what you expect; `expectedMinLength` and `anchor` are
+the checks that say how many there should be.
 
 For each entry in order it checks that the entry is an object with string
 `prevHash` and `entryHash`; that `formatVersion` equals `FORMAT_VERSION`
@@ -184,8 +201,19 @@ equals the previous entry's `entryHash` (or `GENESIS_HASH`); that
 `entryHash` equals the recomputed hash of the entry minus `entryHash` (so a
 changed, added or removed field fails); and that `index` equals the
 position. A non-array `chain` returns
-`{ valid: false, brokenAtIndex: null, reason: "chain is not an array" }`, and
-so does an array-like whose `length` is not a non-negative integer.
+`{ valid: false, brokenAtIndex: null, reason: "chain is not an array", entriesChecked: 0 }`, and
+a similar result for an array-like whose `length` is not a non-negative integer.
+
+With the default `canonicalJSON`, an entry held in memory must also be exactly
+its JSON form (the rule `appendEntry` applies to payloads, applied to the whole
+entry). An entry with a `Date`, `undefined`, a function, a symbol, `NaN`, a
+getter, a symbol-keyed or non-enumerable field, a cycle or a payload nested
+deeper than 255 levels is reported invalid at its index. The entry object itself
+may be a class instance (an ORM row, say) if its own fields are plain data. JSON
+text parsed with `JSON.parse` always passes, so a stored chain read back from
+JSON verifies as before. An entry that is unreadable (a revoked proxy, a getter
+that throws) is reported invalid at its index instead of throwing. A custom
+`canonicalize` is not checked; its own limits apply.
 
 **The result describes the chain as it was when you called.** Before the first
 `await`, `verifyChain` reads the options, the anchor's `index` and `entryHash`,
@@ -203,7 +231,8 @@ entry, and nothing after the first entry that is not an object is read.
 Reasons that include a value from the chain (a `formatVersion` or `index`
 that is not what was expected) name the value safely. A string is quoted and
 cut at 80 characters, and control, line-break, bidirectional and other
-invisible format characters are written as `\uXXXX`, so a stored value cannot
+invisible format characters, every Unicode space except the ordinary space (such as
+NBSP), and U+2800 (Braille blank) are written as `\uXXXX`, so a stored value cannot
 add a line or send a terminal escape. A BigInt is `1n`. An object, symbol or
 function is named ("an object"), never serialized, so a cyclic object or a
 throwing `toJSON` cannot break the report. `brokenAtIndex` and the reason
@@ -213,16 +242,20 @@ still say which entry is wrong.
 
 - `expectedMinLength`: a non-negative integer. A shorter chain is invalid.
   This only catches entries deleted from the end if nobody appended new
-  ones afterwards; anyone can append.
+  ones afterwards; anyone can append. Leave the key out to skip the check; a
+  key that is present with the value `undefined` throws.
 - `anchor`: `{ index, entryHash }` (any `ChainEntry` fits). The chain must
   have an entry at `anchor.index` with exactly that `entryHash`. `entryHash`
-  must not be blank (empty, or only whitespace and invisible characters).
-- `hash`: the hash function used to append. Defaults to `sha256Hex`.
+  must not be blank (empty, or only whitespace, invisible characters and
+  U+2800). Leave the key out to skip the check; a key that is present with the
+  value `undefined` throws, so a lookup that found nothing cannot silently turn
+  the check off.
+- `hash`: the hash function used to append. Defaults to `sha256Hex` (also when the key is present and `undefined`).
 
 These throw a `TypeError` (a bug in the caller, not a property of the chain):
 `options` that is not a plain object, an unknown option key (so a typo, or an
 anchor passed where the options belong, cannot silently skip the anchor
-check), a malformed `expectedMinLength` or `anchor`, a `canonicalize` or `hash`
+check), a malformed `expectedMinLength` or `anchor` (including one that is present but `undefined`), a `canonicalize` or `hash`
 that is not a function, a `canonicalize` that does not return a string, or a
 `hash` that does not resolve to one. Errors thrown by `canonicalize` or `hash`
 propagate.
@@ -239,7 +272,9 @@ propagate.
 ### `canonicalJSON(value)`
 
 Returns a deterministic JSON string: keys sorted at every level by UTF-16
-code unit, array order kept, no whitespace. The value is first converted
+code unit, array order kept, no whitespace. This function stays lenient:
+`appendEntry` and `verifyChain` are the ones that refuse values it would
+silently change. The value is first converted
 exactly as `JSON.stringify` converts it: `toJSON()` is called (a `Date`
 becomes its ISO string), `undefined`, functions and symbols are dropped
 from objects and become `null` in arrays, `NaN` and `±Infinity` become
@@ -247,7 +282,10 @@ from objects and become `null` in arrays, `NaN` and `±Infinity` become
 its JSON round trip give the same string. No Unicode normalization.
 
 Throws a `TypeError` for a top-level `undefined`, function or symbol, a
-cyclic value, or a `BigInt`.
+cyclic value, or a `BigInt`, and a `RangeError` ("nested deeper than 256
+levels") for a value nested more than 256 levels of objects and arrays deep.
+The limit is fixed, not the engine's stack size, so a chain that verifies on one
+machine verifies on every other.
 
 ### `sha256Hex(input)`
 
@@ -289,7 +327,7 @@ console.log((await verifyChain(chain, undefined, { hash: sha256HexNodeFallback }
 `createdAt`), `ChainEntry<T>` (a record plus `entryHash`), `ChainAnchor`
 (`{ index, entryHash }`), `Canonicalizer` (`(value: unknown) => string`),
 `Hasher` (`(input: string) => Promise<string>`), `VerifyOptions` and
-`VerifyResult`.
+`VerifyResult` (`valid`, `brokenAtIndex`, `reason`, `entriesChecked`).
 
 ## Honest limits
 
@@ -306,8 +344,24 @@ console.log((await verifyChain(chain, undefined, { hash: sha256HexNodeFallback }
   timestamps increase.
 - **What is hashed is the JSON form.** `canonicalJSON` is lossy in the same
   ways as `JSON.stringify` (`NaN` becomes `null`, a `Map` becomes `{}`,
-  `undefined` fields disappear). Convert such values yourself if they
-  matter.
+  `undefined` fields disappear). `appendEntry` and `verifyChain` therefore
+  refuse an in-memory payload or entry that JSON would change, so what you
+  hold is what was hashed (see `appendEntry` and `verifyChain` above). Convert
+  such values yourself first. `-0` is accepted and hashes as `0`.
+- **Verification is over parsed JSON values, not bytes.** `verifyChain` sees
+  the result of `JSON.parse` (or your live objects), never the stored text, so
+  stored text that parses to the same values verifies even though the bytes
+  differ. Known cases: `-0` where `0` was hashed; a repeated object key (the
+  last one wins, so `{"by":"a","by":"b"}` reads as `b`); any spelling of the
+  same number (`1.50`, `1E2`); different escapes of the same string; whitespace
+  and key order. Integers beyond 2^53 are read as the nearest double, so a
+  stored `9007199254740993` and `9007199254740992` are the same value to
+  `verifyChain`, and an implementation in another language that keeps exact
+  integers will compute different bytes (a false failure, not a false pass).
+  Keep payload integers within ±(2^53 - 1) or store large ones as strings. A
+  stored `1e999` parses to `Infinity` and is reported invalid, not read as
+  `null`. If you need byte-exact integrity of the stored text, hash the text
+  itself (for example, anchor a SHA-256 of the exported file).
 - **A format tag, not a migration path.** Every entry's hash includes
   `formatVersion: "audit-chain-kit/v1"`, so a future format change gets a
   new tag instead of quietly producing hashes that look like this one, and
@@ -330,8 +384,19 @@ console.log((await verifyChain(chain, undefined, { hash: sha256HexNodeFallback }
 - **Cost and size.** `verifyChain` rehashes every entry from 0 on every
   call, and holds one shallow copy of each entry while it runs (measured with
   20,000 small entries on Node 26.3.0: about 216 ms before the snapshot change
-  and 217 ms after; one machine, not a benchmark suite). Very deeply nested payloads overflow the call stack (on Node 26,
-  1,000 levels worked and 5,000 threw a `RangeError`).
+  and 217 ms after; one machine, not a benchmark suite). Checking that each
+  entry is plain JSON data adds one more pass over every entry; in isolation it
+  took about 0.5 s of CPU for a payload array of one million numbers. Verifying
+  20,000 small entries took 1.1 to 1.7 s of CPU before and 0.6 to 1.7 s after on a
+  heavily loaded machine (Node 26.3.0, five runs each), so no slowdown showed
+  above the noise; this is not a benchmark.
+  Nesting is limited to 256 levels of objects and arrays per entry (255 inside a
+  payload, because the entry itself is the first level). The limit is a fixed
+  number so the verdict does not depend on the engine's stack size: a deeper
+  payload is refused by `appendEntry`, reported invalid by `verifyChain`, and
+  makes `canonicalJSON` throw a `RangeError` that names the limit. Before this
+  limit, the same payloads threw the engine's stack-overflow `RangeError` at an
+  engine-dependent depth (on Node 26, 1,000 levels worked and 5,000 threw).
 
 ## Relationship to sibling kits
 

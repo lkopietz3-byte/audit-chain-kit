@@ -4,6 +4,72 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+The record format (`audit-chain-kit/v1`), `canonicalJSON` output and every golden
+vector are unchanged, so chains written by earlier versions still verify when read
+back from JSON. Some in-memory input that was accepted before is now refused (see
+Changed).
+
+### Fixed
+
+- **`anchor: undefined` and `expectedMinLength: undefined` silently skipped their
+  check.** A key that is present with the value `undefined` (for example, an
+  anchor lookup that found nothing) switched the check off, so a rewritten or
+  truncated chain verified. It now throws a `TypeError`, the same as an unknown
+  option key. Leave the key out to skip the check.
+- **A live entry could verify as something other than what was hashed.** The
+  default canonicalizer hashes the JSON form of a value, so an in-memory entry
+  holding a `toJSON` method, a function, `undefined`, a symbol, `NaN`,
+  `Infinity`, a getter, a symbol-keyed or non-enumerable field, a `Map`, `Set` or
+  class instance, or an array with holes verified as valid while the object you
+  held differed from the object that was hashed. `verifyChain` now reports such an
+  entry invalid at its index, and `appendEntry` refuses such a payload with a
+  `TypeError` that names where. A stored `1e999` (which parses to `Infinity`) where
+  `null` was hashed is now reported invalid, not read as `null`.
+- **Deep nesting threw the engine's stack-overflow `RangeError`.** An entry nested
+  deeper than 256 levels now gives `valid: false` from `verifyChain`, a `TypeError`
+  from `appendEntry`, and a `RangeError` that names the limit from `canonicalJSON`.
+  The limit is fixed, so a chain no longer verifies on one machine and overflows on
+  another.
+- **An unreadable entry threw instead of failing closed.** A revoked proxy or a
+  getter that throws, as an entry or as the chain itself, now gives `valid: false`
+  at that entry (or with `brokenAtIndex: null` for the chain).
+- **Reason text could carry visually blank characters.** NBSP and the other Unicode
+  spaces, and U+2800 (Braille blank), are now written as `\uXXXX`, and an
+  `anchor.entryHash` made only of them (or of U+2800) throws like a blank one.
+
+### Changed
+
+- **`VerifyResult` has a new field, `entriesChecked`**: how many entries were fully
+  checked before the result was decided. An empty chain is `valid: true` with
+  `entriesChecked: 0`; read it before treating a result as evidence that a log has
+  content. Code that compares a whole result with strict deep equality now needs
+  the new key.
+- **Behavior change: `appendEntry` refuses payloads that JSON would change** (with
+  the default canonicalizer). `new Date(...)` payloads, `{ a: undefined }`, `NaN`,
+  `Map`, `Set` and class instances used to be converted silently. Convert them
+  first (`date.toISOString()`, `null`, plain objects). A custom `canonicalize` is
+  not checked. Stored JSON text is unaffected.
+- **Behavior change: `verifyChain` reports an in-memory entry invalid when it is
+  not plain JSON data** (same rule, applied to the whole entry). The entry object
+  itself may still be a class instance, such as an ORM row, if its own fields are
+  plain data. A cycle or a BigInt in an entry now gives `valid: false` instead of a
+  thrown `TypeError`.
+- **Behavior change: `anchor` and `expectedMinLength` present with the value
+  `undefined` now throw.** Code that passed `{ anchor: maybeUndefined }` must leave
+  the key out when there is no anchor.
+
+### Documented
+
+- Verification is over parsed JSON values, not stored bytes: `-0` for `0`, a
+  repeated object key (last wins), alternate spellings of a number, different
+  escapes of a string, whitespace and key order all verify. Integers beyond 2^53
+  are read as the nearest double, so a different literal can verify and another
+  language that keeps exact integers computes different bytes. See "Honest limits".
+- The 256-level nesting limit and the cost of the new inspection pass.
+- `hash: undefined` still means the default hasher.
+
 ## [0.2.1] - 2026-10-07
 
 No change to the library's behavior or API.

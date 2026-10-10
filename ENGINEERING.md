@@ -31,6 +31,17 @@
   deep-copied (documented in the README).
 - Error and reason text never throws and never carries raw control, bidi or
   invisible characters (`describe()` in `src/chain.ts`, `test/messages.test.ts`).
+- With the default `canonicalJSON`, the object you hold is the object that was
+  hashed: `appendEntry` refuses a payload, and `verifyChain` reports an entry
+  invalid, when it differs from its JSON form (`toJSON`, functions, `undefined`,
+  symbols, non-finite numbers, getters, hidden or symbol-keyed fields, holes,
+  non-plain objects, cycles) or nests deeper than `MAX_NESTING_DEPTH` (256, the
+  entry itself being level 1). The inspection (`src/json-data.ts`) never calls
+  caller code. Parsed JSON text always passes. A custom canonicalizer is not
+  checked (`test/verdict-table.test.ts`).
+- An option key that is present with the value `undefined` (`anchor`,
+  `expectedMinLength`) throws; it never skips the check. `VerifyResult` always
+  carries `entriesChecked`, and an empty chain is `valid: true` with `0`.
 - Zero runtime dependencies. Only `src/hash-node-fallback.ts` imports a Node
   built-in, and `src/index.ts` never imports it (source-scan tests).
 

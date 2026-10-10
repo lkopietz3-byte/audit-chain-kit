@@ -39,6 +39,18 @@ Changed).
   spaces, and U+2800 (Braille blank), are now written as `\uXXXX`, and an
   `anchor.entryHash` made only of them (or of U+2800) throws like a blank one.
 
+- **The faithfulness check no longer runs caller code or misses inherited hooks.** It
+  reads property descriptors only (no getter, `toJSON` or `valueOf` runs), rejects a
+  `toJSON` anywhere on a prototype chain (including a null-prototype parent), and
+  rejects Date, Map, Set, RegExp, ArrayBuffer, typed-array and boxed-primitive
+  objects even with the prototype removed. A root entry that is a class instance is
+  accepted only if nothing on its prototype chain defines `toJSON`. `verifyChain`
+  no longer invokes getters on an entry's own fields.
+- **`verifyChain` returned a thrown error for malformed data the default
+  canonicalizer could not serialize** (for example `{ first: undefined, later: 1n }`,
+  a nested throwing getter or a revoked proxy). It now returns `valid: false` at that
+  entry. Errors thrown by a custom `canonicalize` still propagate.
+
 ### Changed
 
 - **`VerifyResult` has a new field, `entriesChecked`**: how many entries were fully

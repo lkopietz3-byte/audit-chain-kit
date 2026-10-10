@@ -27,22 +27,27 @@ export interface JsonProblem {
 
 /**
  * Returns the first reason `value` is not exactly its JSON form, or
- * `undefined`. Never throws and never calls a getter, `toJSON` or any other
- * caller code: it reads property descriptors, prototypes and own keys only (a
- * Proxy trap can still run, and a trap that throws is reported as a problem).
+ * `undefined`. Never throws and never runs a getter, `toJSON`, `valueOf` or any
+ * other caller code: it reads only property descriptors (own, and along the
+ * prototype chain), prototypes and own keys, never `value[key]` (a Proxy trap
+ * can still run, and a trap that throws is reported as a problem).
  *
- * `rootMayBeInstance` lets the outermost object have any prototype. `verifyChain`
- * hashes a copy of an entry's own enumerable fields, never the entry object, so
- * an entry loaded as a class instance (an ORM row, say) is fine as long as its
- * own fields are plain data. Everything below the root must still be plain.
+ * `rootMayBeInstance` lets the outermost object have any prototype that does
+ * not define `toJSON`. `verifyChain` hashes a copy of an entry's own
+ * enumerable fields, never the entry object, so an entry loaded as a class
+ * instance (an ORM row, say) is fine as long as its own fields are plain data
+ * and nothing in its prototype chain could stand in for them. Everything below
+ * the root must be plain.
  *
  * Rejected: `undefined`, functions, symbols (as values or keys), BigInt,
  * `NaN` and `±Infinity`, non-enumerable and accessor properties, array holes
- * and extra array properties, anything with a `toJSON` method, objects that
- * are not plain (Date, Map, Set, boxed primitives, class instances), cycles
- * and nesting deeper than {@link MAX_NESTING_DEPTH}. Accepted: `-0` (it
- * equals `0` and JSON writes `0`), shared references that are not cycles,
- * null-prototype objects.
+ * and extra array properties, a `toJSON` anywhere on the prototype chain (data
+ * or accessor), objects that are not plain (a prototype other than
+ * `Object.prototype` from any realm, or null), objects with internal data JSON
+ * does not see (boxed primitives, Date, Map, Set, RegExp, ArrayBuffer, typed
+ * arrays, even with the prototype removed), cycles and nesting deeper than
+ * {@link MAX_NESTING_DEPTH}. Accepted: `-0` (it equals `0` and JSON writes
+ * `0`), shared references that are not cycles, null-prototype objects.
  */
 export function findJsonProblem(value: unknown, options: { rootMayBeInstance?: boolean } = {}): JsonProblem | undefined {
   return inspect(value, [], new Set<object>(), options.rootMayBeInstance === true);
@@ -97,11 +102,75 @@ function inspect(
   }
 }
 
-function inspectArray(array: readonly unknown[], path: (string | number)[], ancestors: Set<object>): JsonProblem | undefined {
-  if (typeof (array as { toJSON?: unknown }).toJSON === "function") {
-    return problem("lossy", path, "an array with a toJSON method (JSON would call it)");
+const MAX_PROTOTYPE_CHAIN = 1000;
+
+/** True if any prototype of `object`, own or inherited, defines `toJSON` (read as a descriptor, so a getter is not run). */
+function inheritsToJSON(object: object): boolean {
+  let proto: unknown = Object.getPrototypeOf(object);
+  for (let steps = 0; proto !== null; steps++) {
+    // A chain this long is not a real prototype chain; treat it as a hook rather than walk forever.
+    if (steps >= MAX_PROTOTYPE_CHAIN) return true;
+    if (Reflect.getOwnPropertyDescriptor(proto as object, "toJSON") !== undefined) return true;
+    proto = Object.getPrototypeOf(proto);
   }
-  const length = array.length;
+  return false;
+}
+
+function hasDataFunction(object: object, key: string): boolean {
+  const descriptor = Reflect.getOwnPropertyDescriptor(object, key);
+  return descriptor !== undefined && typeof descriptor.value === "function";
+}
+
+/** `Object.prototype` of this or any other realm: one level above null, with the usual methods as data. */
+function isObjectPrototypeLike(proto: object): boolean {
+  return Object.getPrototypeOf(proto) === null && hasDataFunction(proto, "hasOwnProperty") && hasDataFunction(proto, "isPrototypeOf");
+}
+
+const sliceOf = (proto: object, key: string): ((this: unknown) => unknown) | undefined =>
+  Reflect.getOwnPropertyDescriptor(proto, key)?.get as ((this: unknown) => unknown) | undefined;
+const typedArrayProto: object = Object.getPrototypeOf(Uint8Array.prototype) as object;
+
+/**
+ * Each of these is an intrinsic that throws a TypeError unless the object has
+ * the matching internal slot, and runs no caller code. A hit means the object
+ * carries data that `JSON.stringify` does not see (or that it reads through a
+ * conversion), whatever its prototype says.
+ */
+const BRAND_CHECKS: readonly ((value: object) => unknown)[] = [
+  (v) => Number.prototype.valueOf.call(v),
+  (v) => String.prototype.valueOf.call(v),
+  (v) => Boolean.prototype.valueOf.call(v),
+  (v) => BigInt.prototype.valueOf.call(v),
+  (v) => Symbol.prototype.valueOf.call(v),
+  (v) => Date.prototype.getTime.call(v),
+  (v) => Map.prototype.has.call(v, 0),
+  (v) => Set.prototype.has.call(v, 0),
+  (v) => WeakMap.prototype.has.call(v, v),
+  (v) => WeakSet.prototype.has.call(v, v),
+  (v) => sliceOf(RegExp.prototype, "source")?.call(v),
+  (v) => sliceOf(ArrayBuffer.prototype, "byteLength")?.call(v),
+  (v) => sliceOf(typedArrayProto, "length")?.call(v),
+];
+
+function hasInternalData(object: object): boolean {
+  for (const check of BRAND_CHECKS) {
+    try {
+      check(object);
+      return true;
+    } catch {
+      // Not this kind of object.
+    }
+  }
+  return false;
+}
+
+function inspectArray(array: readonly unknown[], path: (string | number)[], ancestors: Set<object>): JsonProblem | undefined {
+  if (inheritsToJSON(array)) {
+    return problem("lossy", path, "an array with a toJSON hook on its prototype chain (JSON would call it)");
+  }
+  const lengthDescriptor = Reflect.getOwnPropertyDescriptor(array, "length");
+  const length: unknown = lengthDescriptor?.value;
+  if (typeof length !== "number") return problem("lossy", path, "an array whose length could not be read");
   // A dense array has exactly its indices plus "length". Checking the count first
   // also stops a huge sparse array from being walked index by index.
   if (Reflect.ownKeys(array).length !== length + 1) {
@@ -129,9 +198,15 @@ function inspectObject(
   ancestors: Set<object>,
   anyPrototype: boolean,
 ): JsonProblem | undefined {
+  if (inheritsToJSON(object)) {
+    return problem("lossy", path, "an object with a toJSON hook on its prototype chain (JSON would call it)");
+  }
   const proto: unknown = Object.getPrototypeOf(object);
-  if (!anyPrototype && proto !== null && Object.getPrototypeOf(proto) !== null) {
+  if (!anyPrototype && proto !== null && !isObjectPrototypeLike(proto as object)) {
     return problem("lossy", path, "an object that is not plain (a Date, Map, Set, boxed primitive or class instance)");
+  }
+  if (hasInternalData(object)) {
+    return problem("lossy", path, "an object with internal data JSON does not see (a Date, Map, Set, boxed primitive or similar)");
   }
   for (const key of Reflect.ownKeys(object)) {
     if (typeof key === "symbol") return problem("lossy", path, "an object with a symbol-keyed property (JSON drops it)");

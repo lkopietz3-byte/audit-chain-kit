@@ -300,6 +300,18 @@ export async function verifyChain<TPayload = unknown>(
       if (error instanceof NestingDepthError) {
         return invalid(i, `entry ${i} is nested deeper than ${MAX_NESTING_DEPTH} levels, which is not supported`);
       }
+      // With the default canonicalizer a throw means the entry cannot be
+      // serialized (a BigInt after an undefined field, a getter or proxy that
+      // throws): malformed data, not a caller bug. A custom canonicalizer's
+      // errors still propagate.
+      if (checkJson) {
+        return invalid(
+          i,
+          jsonProblem !== undefined
+            ? notJsonReason(i, jsonProblem)
+            : `entry ${i} could not be serialized to JSON (a getter, proxy or toJSON threw)`,
+        );
+      }
       throw error;
     }
     if (typeof canonical !== "string") {
@@ -398,9 +410,10 @@ function snapshotEntries(chain: readonly unknown[], length: number, checkJson: b
 
 function snapshotEntry(entry: unknown, checkJson: boolean): EntrySnapshot {
   if (!isObject(entry)) return unusableEntry("malformed");
-  // Inspected before the fields are read, so no getter has run yet.
+  // With the default canonicalizer the fields are read as property descriptors, so no getter or
+  // proxy get trap runs here; an accessor shows up as a problem and its value as undefined.
   const jsonProblem = checkJson ? findJsonProblem(entry, { rootMayBeInstance: true }) : undefined;
-  const { entryHash, ...record } = entry;
+  const { entryHash, ...record } = checkJson ? ownDataFields(entry) : entry;
   const prevHash = record["prevHash"];
   if (typeof entryHash !== "string" || typeof prevHash !== "string") return unusableEntry("malformed");
   return {
@@ -412,6 +425,18 @@ function snapshotEntry(entry: unknown, checkJson: boolean): EntrySnapshot {
     record,
     jsonProblem,
   };
+}
+
+/** A copy of an object's own enumerable string-keyed data properties, read as descriptors (no getter runs). */
+function ownDataFields(object: object): Record<string, unknown> {
+  const copy: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const key of Reflect.ownKeys(object)) {
+    if (typeof key === "symbol") continue;
+    const descriptor = Reflect.getOwnPropertyDescriptor(object, key);
+    if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) continue;
+    copy[key] = descriptor.value;
+  }
+  return copy;
 }
 
 /** Reads `index` and `entryHash` once and validates the copies. */

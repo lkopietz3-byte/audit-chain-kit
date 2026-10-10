@@ -37,7 +37,10 @@
   symbols, non-finite numbers, getters, hidden or symbol-keyed fields, holes,
   non-plain objects, cycles) or nests deeper than `MAX_NESTING_DEPTH` (256, the
   entry itself being level 1). The inspection (`src/json-data.ts`) never calls
-  caller code. Parsed JSON text always passes. A custom canonicalizer is not
+  caller code and never uses `value[key]`: it reads property descriptors (own and
+  along the prototype chain), so a getter, `toJSON` or `valueOf` is never run.
+  With the default canonicalizer a serialization throw is `valid: false`; a custom
+  canonicalizer's errors propagate. Parsed JSON text always passes. A custom canonicalizer is not
   checked (`test/verdict-table.test.ts`).
 - An option key that is present with the value `undefined` (`anchor`,
   `expectedMinLength`) throws; it never skips the check. `VerifyResult` always

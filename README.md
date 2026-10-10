@@ -348,6 +348,14 @@ console.log((await verifyChain(chain, undefined, { hash: sha256HexNodeFallback }
   refuse an in-memory payload or entry that JSON would change, so what you
   hold is what was hashed (see `appendEntry` and `verifyChain` above). Convert
   such values yourself first. `-0` is accepted and hashes as `0`.
+- **The faithfulness check reads descriptors, not values, and cannot see through a
+  Proxy.** It never runs a getter, `toJSON` or `valueOf`, and it rejects a
+  `toJSON` anywhere on a prototype chain, objects whose prototype is not
+  `Object.prototype` (any realm) or null, and objects that carry internal data
+  JSON ignores (boxed primitives, Date, Map, Set, RegExp, ArrayBuffer, typed
+  arrays, even with the prototype removed). A Proxy whose traps answer a
+  descriptor query differently from a value read can still show the check one
+  object and the hash another. Do not pass Proxies you do not control.
 - **Verification is over parsed JSON values, not bytes.** `verifyChain` sees
   the result of `JSON.parse` (or your live objects), never the stored text, so
   stored text that parses to the same values verifies even though the bytes

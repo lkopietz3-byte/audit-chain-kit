@@ -478,17 +478,6 @@ describe("verdict table: probes added after trying to break the fixes", () => {
     expect(reason).not.toMatch(/[⠀‮]/);
   });
 
-  it("a getter on an entry field is read once by verifyChain, never invoked by the inspection", async () => {
-    const chain = await build([{ a: 1 }]);
-    const base = { ...chain[0]! } as Record<string, unknown>;
-    let reads = 0;
-    const hash = base["entryHash"];
-    delete base["entryHash"];
-    Object.defineProperty(base, "entryHash", { enumerable: true, get: () => (reads++, hash) });
-    expect(await verifyChain([base as unknown as ChainEntry])).toMatchObject({ valid: false, brokenAtIndex: 0 });
-    expect(reads).toBe(1);
-  });
-
   it("a hash mismatch is reported before a JSON-faithfulness problem on the same entry", async () => {
     const chain = await build([{ a: 1 }]);
     const edited = { ...chain[0]!, payload: { a: 2, extra: undefined } } as unknown as ChainEntry;
@@ -521,5 +510,148 @@ describe("verdict table: probes added after trying to break the fixes", () => {
     expect(await verifyChain(JSON.parse(text.replace("9007199254740992", "9007199254740993")) as ChainEntry[])).toMatchObject(
       VALID_SHAPE,
     );
+  });
+});
+
+describe("verdict table: review round (inherited hooks, serialization throws, [[Get]] during inspection)", () => {
+  async function liveEntry(payload: unknown): Promise<ChainEntry> {
+    // Hash the JSON form with a lenient serializer, as an older version would have.
+    return (await forgeLive({ payload })) as unknown as ChainEntry;
+  }
+  const hook = (): unknown => ({ a: 1 });
+
+  it("a payload whose null-prototype parent carries toJSON is refused by appendEntry", async () => {
+    const parent = Object.assign(Object.create(null) as object, { toJSON: hook });
+    await expect(appendEntry([], Object.setPrototypeOf({ a: 2 }, parent))).rejects.toThrow(TypeError);
+  });
+
+  it("changing a field that an inherited toJSON hides is valid: false, even with the original anchor", async () => {
+    const parent = Object.assign(Object.create(null) as object, { toJSON: hook });
+    const payload = Object.setPrototypeOf({ a: 2 }, parent) as { a: number };
+    const entry = await liveEntry(payload);
+    const anchor = { index: 0, entryHash: entry.entryHash };
+    payload.a = 3;
+    expect(await verifyChain([entry], undefined, { anchor })).toMatchObject({ valid: false, brokenAtIndex: 0 });
+  });
+
+  it("a payload with a two-level prototype chain is refused even without a hook", async () => {
+    const parent = Object.create(Object.create(null) as object) as object;
+    await expect(appendEntry([], Object.setPrototypeOf({ a: 1 }, parent))).rejects.toThrow(TypeError);
+  });
+
+  it("a root class-instance entry whose prototype chain defines toJSON is valid: false", async () => {
+    class Row {
+      toJSON(): unknown {
+        return { hidden: true };
+      }
+    }
+    const entry = (await build([{ a: 1 }]))[0]!;
+    const row = Object.assign(new Row(), entry) as unknown as ChainEntry;
+    expect(await verifyChain([row])).toMatchObject({ valid: false, brokenAtIndex: 0 });
+  });
+
+  it("an array whose toJSON is a getter is refused without the getter running", async () => {
+    let reads = 0;
+    const array = Object.defineProperty([1, 2], "toJSON", {
+      get: () => (reads++, undefined),
+      enumerable: false,
+    });
+    await expect(appendEntry([], array)).rejects.toThrow(TypeError);
+    expect(reads).toBe(0);
+  });
+
+  it("an array whose prototype defines a toJSON getter is refused without the getter running", async () => {
+    let reads = 0;
+    class Hooked extends Array<number> {
+      get toJSON(): undefined {
+        reads++;
+        return undefined;
+      }
+    }
+    await expect(appendEntry([], Hooked.from([1, 2]))).rejects.toThrow(TypeError);
+    expect(reads).toBe(0);
+  });
+
+  it("inspecting an array behind a Proxy never uses [[Get]]", async () => {
+    const gets: (string | symbol)[] = [];
+    const proxy = new Proxy(Object.assign([1, 2], { note: "extra" }), {
+      get(target, key, receiver): unknown {
+        gets.push(key);
+        return Reflect.get(target, key, receiver) as unknown;
+      },
+    });
+    await expect(appendEntry([], proxy)).rejects.toThrow(TypeError);
+    expect(gets).toEqual([]);
+  });
+
+  it("{ first: undefined, later: 1n } in a live entry is valid: false, not a thrown TypeError", async () => {
+    const lenient = (value: unknown): string => JSON.stringify(value, (_k, x: unknown) => (typeof x === "bigint" ? `${x}n` : x));
+    const record = { formatVersion: FORMAT_VERSION, index: 0, payload: { first: undefined, later: 1n }, prevHash: GENESIS_HASH, createdAt: CREATED_AT };
+    const entry = { ...record, entryHash: await sha256Hex(lenient(record)) } as unknown as ChainEntry;
+    expect(await verifyChain([entry])).toMatchObject({ valid: false, brokenAtIndex: 0 });
+  });
+
+  it("a nested throwing getter is valid: false, not a thrown error", async () => {
+    const payload = Object.defineProperty({}, "x", {
+      enumerable: true,
+      get(): never {
+        throw new Error("boom");
+      },
+    });
+    const entry = { ...(await liveEntry({})), payload } as ChainEntry;
+    expect(await verifyChain([entry])).toMatchObject({ valid: false, brokenAtIndex: 0 });
+  });
+
+  it("a nested revoked proxy is valid: false, not a thrown error", async () => {
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+    const entry = { ...(await liveEntry({})), payload: { p: proxy } } as ChainEntry;
+    expect(await verifyChain([entry])).toMatchObject({ valid: false, brokenAtIndex: 0 });
+  });
+
+  it("an error thrown by a CUSTOM canonicalizer still propagates", async () => {
+    const chain = await build([{ a: 1 }]);
+    const failing = (): string => {
+      throw new RangeError("custom canonicalizer failed");
+    };
+    await expect(verifyChain(chain, failing)).rejects.toThrow("custom canonicalizer failed");
+  });
+
+  it("entry fields that are getters are not invoked by verifyChain", async () => {
+    const chain = await build([{ a: 1 }]);
+    let reads = 0;
+    const live = { ...chain[0]! } as Record<string, unknown>;
+    const payload = live["payload"];
+    delete live["payload"];
+    Object.defineProperty(live, "payload", { enumerable: true, get: () => (reads++, payload) });
+    expect(await verifyChain([live as unknown as ChainEntry])).toMatchObject({ valid: false, brokenAtIndex: 0 });
+    expect(reads).toBe(0);
+  });
+
+  it.each([
+    ["a Number with its prototype removed", () => Object.setPrototypeOf(new Number(5), null) as object],
+    ["a String with its prototype removed", () => Object.setPrototypeOf(new String("ab"), null) as object],
+    ["a Date with its prototype removed", () => Object.setPrototypeOf(new Date(0), null) as object],
+    ["a Map with its prototype removed", () => Object.setPrototypeOf(new Map([["a", 1]]), null) as object],
+    ["a Set with its prototype removed", () => Object.setPrototypeOf(new Set([1]), null) as object],
+    ["a RegExp with its prototype removed", () => Object.setPrototypeOf(/a/, null) as object],
+    ["a Uint8Array with its prototype removed", () => Object.setPrototypeOf(new Uint8Array(2), null) as object],
+  ])("%s is refused: its internal data is not in the JSON form", async (_label, make) => {
+    await expect(appendEntry([], make())).rejects.toThrow(TypeError);
+  });
+
+  it("a boxed Number with an own valueOf is refused without running it", async () => {
+    let calls = 0;
+    const boxed = Object.assign(new Number(1), { valueOf: () => (calls++, 2) });
+    await expect(appendEntry([], boxed)).rejects.toThrow(TypeError);
+    expect(calls).toBe(0);
+  });
+
+  it("guard: an Object.prototype-like parent from another realm is still accepted", async () => {
+    const { runInNewContext } = await import("node:vm");
+    const foreign = runInNewContext("({ a: 1, b: [1, { c: 2 }] })") as unknown;
+    const chain = await build([foreign]);
+    expect(await verifyChain(rt(chain))).toMatchObject({ valid: true, entriesChecked: 1 });
+    expect(await verifyChain(chain)).toMatchObject({ valid: true, entriesChecked: 1 });
   });
 });

@@ -2,11 +2,11 @@
 // by scripts/verify-package.mjs. It uses the public types the way a
 // TypeScript consumer would; it is type-checked, not run.
 import {
-  appendEntry, appendToStore, canonicalJSON, computeEntry, createChainVerifier, FORMAT_VERSION,
+  appendEntry, appendGapToStore, appendToStore, canonicalJSON, computeEntry, createChainVerifier, FORMAT_VERSION,
   GENESIS_HASH, GENESIS_HEAD, sha256Hex, splitValidPrefix, verifyChain,
 } from 'audit-chain-kit';
 import type {
-  AppendOutcome, AppendStore, Canonicalizer, ChainAnchor, ChainEntry, ChainHead, ChainRecord,
+  AppendOutcome, AppendStore, GapPayload, Canonicalizer, ChainAnchor, ChainEntry, ChainHead, ChainRecord,
   ChainVerifierResult, Hasher, VerifyOptions, VerifyResult,
 } from 'audit-chain-kit';
 import { sha256HexNodeFallback } from 'audit-chain-kit/hash-node-fallback';
@@ -61,9 +61,11 @@ export async function storeProbe(store: AppendStore<AuditEvent>): Promise<ChainV
   await verifier.push(outcome.entry);
   await verifier.push(entry);
   const split = await splitValidPrefix<AuditEvent>([outcome.entry, entry]);
-  const first: ChainEntry<AuditEvent> | undefined = split.valid[0];
+  const first: ChainEntry<AuditEvent | GapPayload> | undefined = split.valid[0];
   void first;
   // @ts-expect-error createdAt is required: there is no clock default
   await computeEntry({ prevHash: head.hash, index: 1, payload: {} });
+  // @ts-expect-error a store typed for AuditEvent payloads cannot take gap records
+  await appendGapToStore(store, { reason: 'x', count: 1 });
   return verifier.finish();
 }

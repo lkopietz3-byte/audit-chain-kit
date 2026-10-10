@@ -12,7 +12,7 @@ import type { EntrySnapshot } from "./chain.js";
 import { GENESIS_HEAD, readHead } from "./compute.js";
 import type { ChainHead } from "./compute.js";
 import { readGapPayload } from "./gap.js";
-import type { GapRead, MarkedGap } from "./gap.js";
+import type { GapPayload, GapRead, MarkedGap } from "./gap.js";
 import { sha256Hex } from "./hash.js";
 import { FORMAT_VERSION } from "./types.js";
 import type { Canonicalizer, ChainEntry, Hasher } from "./types.js";
@@ -359,11 +359,13 @@ const unreadableEntry = (arrayIndex: number): UnreadableEntry => Object.freeze({
 /** What {@link splitValidPrefix} returns. */
 export interface SplitResult<TPayload = unknown> {
   /** The longest verified prefix, as read from the input, in order. */
-  readonly valid: ChainEntry<TPayload>[];
+  readonly valid: ChainEntry<TPayload | GapPayload>[];
   /**
    * Everything from the first break on, as read from the input, in order (empty
    * when nothing broke). Not verified. An element that could not be read is an
-   * {@link UnreadableEntry}; holes in a sparse array are left out.
+   * {@link UnreadableEntry}; holes in a sparse array are left out. Non-enumerable
+   * index elements are included. Entries are typed as possibly gap records
+   * because an accepted gap record is among them.
    */
   readonly rest: unknown[];
   /** The first break, or `null` when every entry verified. `index` is `null` when the input was not a readable array. */
@@ -390,7 +392,8 @@ function unreadableElement(): object {
  * valid, no `rest`, `firstBreak.index` null).
  *
  * @throws TypeError for bad `options`, as `createChainVerifier`
- * @throws whatever your `hash` or `canonicalize` function threw, if one threw
+ * @throws exactly what your `hash` or `canonicalize` function threw, if one threw
+ *   (the value itself, whatever its type)
  */
 export async function splitValidPrefix<TPayload = unknown>(
   entries: readonly unknown[],
@@ -421,27 +424,30 @@ export async function splitValidPrefix<TPayload = unknown>(
     }
     const result = await verifier.finish();
     if (result.status === "error") {
-      throw result.error instanceof Error ? result.error : new Error(result.reason ?? "verification failed");
+      // Exactly what the callback threw (an object, a string, a cross-realm Error), as documented.
+      throw result.error;
     }
     const rest: unknown[] = [item === unreadableElement() ? unreadableEntry(i) : item];
-    let keys: string[] = [];
+    let keys: (string | symbol)[] = [];
     try {
-      keys = Object.keys(entries);
+      keys = Reflect.ownKeys(entries);
     } catch {
       // The remainder cannot be listed; rest holds only the entry that broke.
     }
-    // Own index keys in ascending order, one read each, so a hole costs nothing and one bad element loses only itself.
+    // Own index keys (enumerable or not) in ascending order, one read each, so a hole costs nothing
+    // and one bad element loses only itself.
     for (const key of keys) {
+      if (typeof key !== "string") continue;
       const position = Number(key);
-      if (!Number.isSafeInteger(position) || position <= i || String(position) !== key) continue;
+      if (!Number.isSafeInteger(position) || position <= i || position >= 2 ** 32 - 1 || String(position) !== key) continue;
       try {
         rest.push(entries[position]);
       } catch {
         rest.push(unreadableEntry(position));
       }
     }
-    return { valid: valid as ChainEntry<TPayload>[], rest, firstBreak: { index: result.brokenAtIndex, reason: result.reason ?? "" } };
+    return { valid: valid as ChainEntry<TPayload | GapPayload>[], rest, firstBreak: { index: result.brokenAtIndex, reason: result.reason ?? "" } };
   }
   await verifier.finish();
-  return { valid: valid as ChainEntry<TPayload>[], rest: [], firstBreak: null };
+  return { valid: valid as ChainEntry<TPayload | GapPayload>[], rest: [], firstBreak: null };
 }

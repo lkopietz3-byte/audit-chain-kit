@@ -2,6 +2,7 @@ import { assertFunction, describe, isBlank, isIndex, isObject, isPlainObject } f
 import { computeEntry, GENESIS_HEAD, readHead } from "./compute.js";
 import type { ChainHead } from "./compute.js";
 import { gapPayload } from "./gap.js";
+import type { GapPayload } from "./gap.js";
 import type { Canonicalizer, ChainEntry, Hasher } from "./types.js";
 
 /** What {@link AppendStore.readHead} answers. */
@@ -41,7 +42,7 @@ export interface AppendStore<TPayload = unknown> {
    * `conflict` and write nothing. Return `unavailable` when you cannot tell
    * whether the write happened; the caller then does not retry on its own.
    */
-  appendIfHead(input: { readonly expectedHead: ChainHead; readonly entry: ChainEntry<TPayload> }): Promise<StoreAppendResult>;
+  appendIfHead: (input: { readonly expectedHead: ChainHead; readonly entry: ChainEntry<TPayload> }) => Promise<StoreAppendResult>;
 }
 
 /** What {@link appendToStore} and {@link appendGapToStore} return. Only `"appended"` means the entry is in the log. */
@@ -98,14 +99,17 @@ export function appendToStore<TPayload = unknown>(
  * lost rows you cannot recover, so verification can say so instead of failing
  * forever. Same retry and fail-closed behavior as {@link appendToStore}.
  *
+ * The store must admit gap payloads (`AppendStore<YourPayload | GapPayload>`),
+ * and the outcome's entry is typed as the gap record it is.
+ *
  * @throws TypeError for a malformed `store`, `options`, `reason` or `count`
  *   (`count` is an integer of at least 1)
  */
-export async function appendGapToStore<TPayload = unknown>(
-  store: AppendStore<TPayload>,
+export async function appendGapToStore<TPayload = GapPayload>(
+  store: AppendStore<TPayload | GapPayload>,
   gap: { readonly reason: string; readonly count: number },
   options?: AppendToStoreOptions,
-): Promise<AppendOutcome<TPayload>> {
+): Promise<AppendOutcome<GapPayload>> {
   if (!isObject(gap)) throw new TypeError("appendGapToStore: expected { reason, count }");
   const reason: unknown = gap["reason"];
   const count: unknown = gap["count"];
@@ -114,7 +118,7 @@ export async function appendGapToStore<TPayload = unknown>(
   }
   // Checks the reason now, before any store call.
   gapPayload({ reason: reason as string, from: 0, to: 0 });
-  return run(
+  return run<GapPayload>(
     store,
     (head): Planned => ({
       index: head.index + count + 1,

@@ -419,7 +419,8 @@ A gap record is an ordinary entry that says "positions `from` to `to` hold no
 entries", for a restore or outage that lost rows you cannot recover. Build the
 payload with `gapPayload({ reason, from, to })` and give the entry
 `index = to + 1` (or call `appendGapToStore(store, { reason, count })`, which
-computes both). Its payload is exactly
+computes both; the store must be typed `AppendStore<YourPayload | GapPayload>`
+and the outcome's entry is typed `GapPayload`). Its payload is exactly
 `{ kind: "audit-chain-kit/gap", reason, from, to }`.
 
 - With `allowMarkedGaps: true`, the verifier accepts a gap record whose range is

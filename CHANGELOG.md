@@ -42,6 +42,11 @@ format and every existing verdict are unchanged.
   `splitValidPrefix` keeps every readable row after the first break (an unreadable one
   becomes `{ unreadable: true, arrayIndex }`). `appendToStore` returns `unavailable`
   when a store's answer cannot be read, instead of rejecting.
+- Types: `appendGapToStore` requires a store that admits `GapPayload` and returns
+  `AppendOutcome<GapPayload>`; `AppendStore.appendIfHead` is declared as a function
+  property so that check is strict; `splitValidPrefix` types `valid` as possibly gap
+  records. `splitValidPrefix` includes non-enumerable index elements in `rest` and
+  rethrows exactly what a custom `hash` or `canonicalize` threw.
 - **`docs/CANONICAL-FORM.md`**, the byte-level canonical form with worked examples that
   a test recomputes, and a Postgres recipe in the README (text only; no SQL or driver
   dependency).

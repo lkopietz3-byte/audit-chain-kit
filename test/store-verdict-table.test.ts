@@ -19,7 +19,7 @@ import {
   splitValidPrefix,
   verifyChain,
 } from "../src/index.js";
-import type { AppendStore, ChainEntry, ChainVerifierOptions, ChainVerifierResult } from "../src/index.js";
+import type { AppendStore, ChainEntry, ChainVerifierOptions, ChainVerifierResult, GapPayload } from "../src/index.js";
 
 /**
  * Verdict table for the store-backed API: computeEntry, the streaming
@@ -1313,5 +1313,81 @@ describe("verdict table: review round (unsafe positions, suffix recovery, hostil
     await verifier.push(chain[0]);
     expect(await verifier.finish()).toMatchObject({ status: "error", valid: false });
     await expect(splitValidPrefix(chain, { canonicalize })).rejects.toThrow(RangeError);
+  });
+});
+
+describe("verdict table: final review round (gap store types, non-enumerable suffix, thrown values)", () => {
+  interface Action {
+    readonly action: string;
+  }
+
+  it("appendGapToStore needs a store that admits gap payloads, and returns the gap's own type", async () => {
+    const now = (): string => at(1);
+    const actions = createMemoryAppendStore<Action>({ now });
+    // @ts-expect-error a store typed for Action payloads cannot be handed a gap record
+    await appendGapToStore(actions, { reason: "lost", count: 1 });
+
+    const wide = createMemoryAppendStore<Action | GapPayload>({ now });
+    await appendToStore(wide, { action: "first" });
+    const outcome = await appendGapToStore(wide, { reason: "lost", count: 2 });
+    expect(outcome.status).toBe("appended");
+    if (outcome.status === "appended") {
+      const payload: GapPayload = outcome.entry.payload;
+      expect(payload).toMatchObject({ kind: MARKED_GAP_KIND, from: 1, to: 2 });
+      // @ts-expect-error the payload is a GapPayload, not an Action
+      void outcome.entry.payload.action;
+    }
+  });
+
+  it("splitValidPrefix types its valid entries as possibly gap records", async () => {
+    const chain = await chainWithGap();
+    const split = await splitValidPrefix<Action>(chain, { allowMarkedGaps: true });
+    const first: ChainEntry<Action | GapPayload> | undefined = split.valid[0];
+    expect(first).toBeDefined();
+    // @ts-expect-error entries are not narrowed to Action: a gap record may be among them
+    const narrowed: ChainEntry<Action> | undefined = split.valid[0];
+    void narrowed;
+  });
+
+  it("splitValidPrefix keeps non-enumerable index elements after the first break", async () => {
+    const chain = await honest(4);
+    const entries: unknown[] = [null, chain[1], undefined, undefined];
+    Object.defineProperty(entries, 2, { value: chain[2], enumerable: false, writable: true, configurable: true });
+    Object.defineProperty(entries, 3, {
+      enumerable: false,
+      configurable: true,
+      get() {
+        throw new Error("hidden and unreadable");
+      },
+    });
+    const split = await splitValidPrefix(entries);
+    expect(split.rest).toHaveLength(4);
+    expect(split.rest[2]).toBe(chain[2]);
+    expect(split.rest[3]).toEqual({ unreadable: true, arrayIndex: 3 });
+  });
+
+  it("splitValidPrefix still skips a huge sparse array quickly after a non-enumerable index", async () => {
+    const sparse: unknown[] = [null];
+    sparse.length = 3_000_000_000;
+    Object.defineProperty(sparse, 2_000_000_000, { value: "tail", enumerable: false });
+    const t0 = Date.now();
+    const split = await splitValidPrefix(sparse);
+    expect(split.rest).toEqual([null, "tail"]);
+    expect(Date.now() - t0).toBeLessThan(5000);
+  });
+
+  it("splitValidPrefix rethrows exactly what a custom hash threw: an object, a string, a cross-realm Error", async () => {
+    const chain = await honest(2);
+    const thrown: unknown[] = [{ code: 42 }, "plain string", vm.runInNewContext("new Error('other realm')") as unknown, 7];
+    for (const value of thrown) {
+      let caught: unknown;
+      try {
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+        await splitValidPrefix(chain, { hash: () => Promise.reject(value) });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBe(value);
+    }
   });
 });

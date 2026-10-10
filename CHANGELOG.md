@@ -47,6 +47,11 @@ format and every existing verdict are unchanged.
   property so that check is strict; `splitValidPrefix` types `valid` as possibly gap
   records. `splitValidPrefix` includes non-enumerable index elements in `rest` and
   rethrows exactly what a custom `hash` or `canonicalize` threw.
+- `docs/CANONICAL-FORM.md` section 4 now hashes the entry minus `entryHash` and
+  checks the format version, like the package, and a test runs that example against
+  tampering. `splitValidPrefix` returns `rest` in index order, reads indexes one by
+  one when a Proxy's `ownKeys` throws, and sets `restComplete: false` when `rest` may
+  be shorter than the input.
 - **`docs/CANONICAL-FORM.md`**, the byte-level canonical form with worked examples that
   a test recomputes, and a Postgres recipe in the README (text only; no SQL or driver
   dependency).

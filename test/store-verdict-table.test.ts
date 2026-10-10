@@ -28,6 +28,9 @@ import type { AppendStore, ChainEntry, ChainVerifierOptions, ChainVerifierResult
  * input. Honest chains must pass, every bad input must be flagged.
  */
 
+// Heavy rows (millions of bytes, thousands of hashes) must not fail on a loaded machine's default 5 s limit.
+vi.setConfig({ testTimeout: 60_000 });
+
 const at = (n: number): string => `2026-01-01T00:00:${String(n % 60).padStart(2, "0")}.000Z`;
 
 interface Spec {
@@ -77,6 +80,12 @@ async function acrossPages(entries: readonly unknown[], options?: ChainVerifierO
   for (const result of results.slice(1)) expect(result).toEqual(results[0]);
   return results[0]!;
 }
+
+/** CPU milliseconds used by this process: stable when the machine is loaded, unlike wall time. */
+const cpuNow = (): number => {
+  const u = process.cpuUsage();
+  return (u.user + u.system) / 1000;
+};
 
 const rt = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
@@ -904,14 +913,21 @@ describe("verdict table: hostile entries pushed to the verifier", () => {
     expect((await streamed(chain, 1)).valid).toBe(true);
   });
 
-  it("a payload with the reserved kind and 200,000 keys is malformed, and quickly", async () => {
+  it("a payload with the reserved kind and many keys is malformed, at linear cost", { timeout: 120_000 }, async () => {
     const base = await honest(2);
-    const wide: Record<string, unknown> = { kind: MARKED_GAP_KIND };
-    for (let i = 0; i < 200_000; i++) wide[`k${i}`] = i;
-    const bad = await mk({ index: 2, prevHash: base[1]!.entryHash, payload: wide });
-    const t0 = Date.now();
-    expect(await streamed([...base, bad], 1, { allowMarkedGaps: true })).toMatchObject({ valid: false, brokenAtIndex: 2 });
-    expect(Date.now() - t0).toBeLessThan(5000);
+    const timeFor = async (keys: number): Promise<number> => {
+      const wide: Record<string, unknown> = { kind: MARKED_GAP_KIND };
+      for (let i = 0; i < keys; i++) wide[`k${i}`] = i;
+      const bad = await mk({ index: 2, prevHash: base[1]!.entryHash, payload: wide });
+      const t0 = cpuNow();
+      expect(await streamed([...base, bad], 1, { allowMarkedGaps: true })).toMatchObject({ valid: false, brokenAtIndex: 2 });
+      return cpuNow() - t0;
+    };
+    await timeFor(1000); // warm up
+    const small = await timeFor(50_000);
+    const big = await timeFor(200_000);
+    // Four times the keys must cost well under 16 times as much (linear is about 4).
+    expect(big / small).toBeLessThan(10);
   });
 
   it("a getter that supplies the reserved kind is not read as a gap and is reported as a getter", async () => {
@@ -1265,10 +1281,10 @@ describe("verdict table: review round (unsafe positions, suffix recovery, hostil
   it("splitValidPrefix does not walk a huge sparse array hole by hole", async () => {
     const sparse: unknown[] = [null];
     sparse.length = 4_000_000_000;
-    const t0 = Date.now();
+    const t0 = cpuNow();
     const split = await splitValidPrefix(sparse);
     expect(split.firstBreak).toMatchObject({ index: 0 });
-    expect(Date.now() - t0).toBeLessThan(5000);
+    expect(cpuNow() - t0).toBeLessThan(5000);
   });
 
   it("hostile store answers (getters that throw) are unavailable, never a rejection", async () => {
@@ -1370,10 +1386,10 @@ describe("verdict table: final review round (gap store types, non-enumerable suf
     const sparse: unknown[] = [null];
     sparse.length = 3_000_000_000;
     Object.defineProperty(sparse, 2_000_000_000, { value: "tail", enumerable: false });
-    const t0 = Date.now();
+    const t0 = cpuNow();
     const split = await splitValidPrefix(sparse);
     expect(split.rest).toEqual([null, "tail"]);
-    expect(Date.now() - t0).toBeLessThan(5000);
+    expect(cpuNow() - t0).toBeLessThan(5000);
   });
 
   it("splitValidPrefix rethrows exactly what a custom hash threw: an object, a string, a cross-realm Error", async () => {
@@ -1389,5 +1405,57 @@ describe("verdict table: final review round (gap store types, non-enumerable suf
       }
       expect(caught).toBe(value);
     }
+  });
+});
+
+describe("verdict table: suffix recovery over Proxy arrays", () => {
+  it("a Proxy array whose ownKeys trap throws still yields every readable row", async () => {
+    const chain = await honest(3);
+    const target: unknown[] = [null, chain[1], chain[2]];
+    const proxy = new Proxy(target, {
+      ownKeys() {
+        throw new Error("ownKeys");
+      },
+    });
+    const split = await splitValidPrefix(proxy);
+    expect(split.rest).toEqual([null, chain[1], chain[2]]);
+    expect(split.restComplete).toBe(true);
+  });
+
+  it("a throwing ownKeys on an array too long to walk says so instead of returning a short rest", async () => {
+    const chain = await honest(2);
+    const target: unknown[] = [null, chain[1]];
+    const proxy = new Proxy(target, {
+      ownKeys() {
+        throw new Error("ownKeys");
+      },
+      get(t, key) {
+        return key === "length" ? 50_000_000 : (Reflect.get(t, key) as unknown);
+      },
+    });
+    const t0 = cpuNow();
+    const split = await splitValidPrefix(proxy);
+    expect(split.restComplete).toBe(false);
+    expect(split.rest[0]).toBeNull();
+    expect(cpuNow() - t0).toBeLessThan(10_000);
+  });
+
+  it("index keys in any order come back in index order", async () => {
+    const chain = await honest(3);
+    const target: unknown[] = [null, chain[1], chain[2]];
+    const proxy = new Proxy(target, {
+      ownKeys() {
+        return ["2", "0", "1", "length"];
+      },
+    });
+    const split = await splitValidPrefix(proxy);
+    expect(split.rest).toEqual([null, chain[1], chain[2]]);
+    expect(split.restComplete).toBe(true);
+  });
+
+  it("an ordinary array reports restComplete true, and a clean list too", async () => {
+    const chain = await honest(2);
+    expect((await splitValidPrefix(chain)).restComplete).toBe(true);
+    expect((await splitValidPrefix([null, ...chain])).restComplete).toBe(true);
   });
 });

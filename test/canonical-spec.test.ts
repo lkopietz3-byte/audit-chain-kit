@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import * as vm from "node:vm";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { canonicalJSON, computeEntry, createChainVerifier, FORMAT_VERSION } from "../src/index.js";
@@ -116,5 +117,52 @@ describe("docs/CANONICAL-FORM.md worked examples", () => {
   it("the spec's own rules are not a restatement of the kit: they reject a wrong edit of an example", () => {
     const sample = values[0]!;
     expect(specCanonical(JSON.parse(sample["json"]!))).not.toBe(sample["canonical"]!.replace("[true,null]", "[true, null]"));
+  });
+});
+
+/** The JavaScript example in section 4 of the spec, run as an outside implementer would run it. */
+function docExample(): { entryIsIntact: (e: unknown) => boolean; recompute: (e: unknown) => string } {
+  const match = /## 4\.[\s\S]*?```js\n([\s\S]*?)\n```/.exec(SPEC);
+  if (match === null) throw new Error("section 4 has no js example");
+  const code = match[1]!.replace(/^import .*$/m, "");
+  return vm.runInNewContext(`${code}\n({ entryIsIntact, recompute })`, { createHash }) as {
+    entryIsIntact: (e: unknown) => boolean;
+    recompute: (e: unknown) => string;
+  };
+}
+
+describe("docs/CANONICAL-FORM.md section 4 example logic", () => {
+  const records = blocks("example-record");
+  const asEntry = (r: Record<string, string>): Record<string, unknown> => ({
+    formatVersion: FORMAT_VERSION,
+    index: Number(r["index"]),
+    payload: JSON.parse(r["payload"]!) as unknown,
+    prevHash: r["prevHash"],
+    createdAt: r["createdAt"],
+    entryHash: r["entryHash"],
+  });
+
+  it("accepts every documented entry", () => {
+    const { entryIsIntact } = docExample();
+    for (const r of records) expect(entryIsIntact(asEntry(r))).toBe(true);
+  });
+
+  it("rejects a changed formatVersion, even with the hash recomputed for it, and an added own field", () => {
+    const { entryIsIntact, recompute } = docExample();
+    const entry = asEntry(records[0]!);
+    expect(entryIsIntact({ ...entry, formatVersion: "audit-chain-kit/v2" })).toBe(false);
+    const other: Record<string, unknown> = { ...entry, formatVersion: "other/v9" };
+    other["entryHash"] = recompute(other);
+    expect(entryIsIntact(other)).toBe(false);
+    expect(entryIsIntact({ ...entry, tenant: "t1" })).toBe(false);
+    expect(entryIsIntact({ ...entry, formatVersion: undefined })).toBe(false);
+  });
+
+  it("rejects the edits the package rejects: payload, index, prevHash, createdAt", () => {
+    const { entryIsIntact } = docExample();
+    const entry = asEntry(records[1]!);
+    for (const patch of [{ payload: { n: 43 } }, { index: 2 }, { prevHash: "f".repeat(64) }, { createdAt: "2027-01-01T00:00:00.000Z" }]) {
+      expect(entryIsIntact({ ...entry, ...patch })).toBe(false);
+    }
   });
 });

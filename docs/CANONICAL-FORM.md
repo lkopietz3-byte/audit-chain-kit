@@ -86,6 +86,12 @@ start from JSON text that your own parser read; that is the same data.
 
 ## 4. A complete reference in a few lines (JavaScript)
 
+The package hashes the entry as it finds it: every own field except
+`entryHash`, with whatever `formatVersion` it carries. So a changed version or
+an added field changes the digest (or, for a version this format does not
+know, is refused outright). A reimplementation must do the same; hashing a
+fixed list of five fields would accept edits the package rejects.
+
 ```js
 import { createHash } from "node:crypto";
 
@@ -96,11 +102,22 @@ function canonical(v) {
   return `{${keys.map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(",")}}`;
 }
 
-const entryHash = (e) =>
-  createHash("sha256")
-    .update(canonical({ createdAt: e.createdAt, formatVersion: "audit-chain-kit/v1", index: e.index, payload: e.payload, prevHash: e.prevHash }), "utf8")
-    .digest("hex");
+// Hash the entry minus entryHash: all of its own fields, not a fixed list.
+function recompute(e) {
+  const { entryHash, ...record } = e;
+  return createHash("sha256").update(canonical(record), "utf8").digest("hex");
+}
+
+// Intact means: a version this format knows, and a matching hash. A changed
+// field, an added field or another formatVersion is rejected.
+function entryIsIntact(e) {
+  return e.formatVersion === "audit-chain-kit/v1" && recompute(e) === e.entryHash;
+}
 ```
+
+This checks one entry. A chain also needs `prevHash` to equal the previous
+entry's `entryHash` (or 64 zeros for the first) and `index` to equal the
+position (section 6 covers gap records).
 
 ## 5. How `createdAt` is encoded
 

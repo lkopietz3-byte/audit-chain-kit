@@ -368,8 +368,56 @@ export interface SplitResult<TPayload = unknown> {
    * because an accepted gap record is among them.
    */
   readonly rest: unknown[];
+  /**
+   * `false` when the elements after the break could not all be listed, so `rest`
+   * may be shorter than the input: the array's keys could not be enumerated (a
+   * Proxy trap threw) and it was too long to read index by index (more than
+   * {@link MOST_INDEXES_READ} elements; the first that many are in `rest`).
+   * Otherwise `true`.
+   */
+  readonly restComplete: boolean;
   /** The first break, or `null` when every entry verified. `index` is `null` when the input was not a readable array. */
   readonly firstBreak: { readonly index: number | null; readonly reason: string } | null;
+}
+
+/** When an array's keys cannot be listed, `rest` is filled by reading indexes one by one, up to this many. */
+export const MOST_INDEXES_READ = 1_000_000;
+
+/**
+ * Appends the elements after position `after` to `rest`, in index order, one
+ * read each (an unreadable one becomes an {@link UnreadableEntry}). Returns
+ * false if some may be missing. With working `ownKeys` the walk follows the
+ * array's own index keys (enumerable or not), so holes cost nothing; if listing
+ * the keys throws, it reads indexes `after + 1` up to the length instead.
+ */
+function collectRest(entries: readonly unknown[], after: number, length: number, rest: unknown[]): boolean {
+  const read = (position: number): void => {
+    try {
+      rest.push(entries[position]);
+    } catch {
+      rest.push(unreadableEntry(position));
+    }
+  };
+  let keys: (string | symbol)[] | undefined;
+  try {
+    keys = Reflect.ownKeys(entries);
+  } catch {
+    keys = undefined;
+  }
+  if (keys === undefined) {
+    const stop = Math.min(length, after + 1 + MOST_INDEXES_READ);
+    for (let position = after + 1; position < stop; position++) read(position);
+    return stop === length;
+  }
+  const positions: number[] = [];
+  for (const key of keys) {
+    if (typeof key !== "string") continue;
+    const position = Number(key);
+    if (Number.isSafeInteger(position) && position > after && position < 2 ** 32 - 1 && String(position) === key) positions.push(position);
+  }
+  positions.sort((a, b) => a - b);
+  for (const position of positions) read(position);
+  return true;
 }
 
 let unreadable: object | undefined;
@@ -400,7 +448,12 @@ export async function splitValidPrefix<TPayload = unknown>(
   options?: ChainVerifierOptions,
 ): Promise<SplitResult<TPayload>> {
   const verifier = createChainVerifier(options);
-  const unreadableInput = (reason: string): SplitResult<TPayload> => ({ valid: [], rest: [], firstBreak: { index: null, reason } });
+  const unreadableInput = (reason: string): SplitResult<TPayload> => ({
+    valid: [],
+    rest: [],
+    restComplete: true,
+    firstBreak: { index: null, reason },
+  });
   let length: unknown;
   try {
     if (!Array.isArray(entries)) return unreadableInput("entries is not an array");
@@ -428,26 +481,14 @@ export async function splitValidPrefix<TPayload = unknown>(
       throw result.error;
     }
     const rest: unknown[] = [item === unreadableElement() ? unreadableEntry(i) : item];
-    let keys: (string | symbol)[] = [];
-    try {
-      keys = Reflect.ownKeys(entries);
-    } catch {
-      // The remainder cannot be listed; rest holds only the entry that broke.
-    }
-    // Own index keys (enumerable or not) in ascending order, one read each, so a hole costs nothing
-    // and one bad element loses only itself.
-    for (const key of keys) {
-      if (typeof key !== "string") continue;
-      const position = Number(key);
-      if (!Number.isSafeInteger(position) || position <= i || position >= 2 ** 32 - 1 || String(position) !== key) continue;
-      try {
-        rest.push(entries[position]);
-      } catch {
-        rest.push(unreadableEntry(position));
-      }
-    }
-    return { valid: valid as ChainEntry<TPayload | GapPayload>[], rest, firstBreak: { index: result.brokenAtIndex, reason: result.reason ?? "" } };
+    const complete = collectRest(entries, i, length, rest);
+    return {
+      valid: valid as ChainEntry<TPayload | GapPayload>[],
+      rest,
+      restComplete: complete,
+      firstBreak: { index: result.brokenAtIndex, reason: result.reason ?? "" },
+    };
   }
   await verifier.finish();
-  return { valid: valid as ChainEntry<TPayload | GapPayload>[], rest: [], firstBreak: null };
+  return { valid: valid as ChainEntry<TPayload | GapPayload>[], rest: [], restComplete: true, firstBreak: null };
 }

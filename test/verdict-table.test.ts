@@ -655,3 +655,82 @@ describe("verdict table: review round (inherited hooks, serialization throws, [[
     expect(await verifyChain(chain)).toMatchObject({ valid: true, entriesChecked: 1 });
   });
 });
+
+describe("verdict table: second review round (cost on the common path, bounded paths)", () => {
+  const cpuMs = async (work: () => Promise<unknown>): Promise<number> => {
+    const before = process.cpuUsage();
+    await work();
+    const used = process.cpuUsage(before);
+    return (used.user + used.system) / 1000;
+  };
+
+  it("verifying 2,000 small entries with the inspection costs about as much as without it", async () => {
+    const chain: ChainEntry[] = [];
+    let prevHash = GENESIS_HASH;
+    for (let index = 0; index < 2000; index++) {
+      const record = { formatVersion: FORMAT_VERSION, index, payload: { n: index, tags: ["a", { b: null }], s: "x", e: {} }, prevHash, createdAt: CREATED_AT };
+      const entryHash = createHash("sha256").update(canonicalJSON(record)).digest("hex");
+      chain.push({ ...record, entryHash });
+      prevHash = entryHash;
+    }
+    // A wrapper is a custom canonicalizer, so it skips the inspection: same hashing and serializing work.
+    const uninspected = (value: unknown): string => canonicalJSON(value);
+    const best = async (canonicalize?: (value: unknown) => string): Promise<number> => {
+      let fastest = Number.POSITIVE_INFINITY;
+      for (let run = 0; run < 7; run++) {
+        fastest = Math.min(
+          fastest,
+          await cpuMs(async () => {
+            expect((await verifyChain(chain, canonicalize)).valid).toBe(true);
+          }),
+        );
+      }
+      return fastest;
+    };
+    await best(uninspected); // warm up
+    const without = await best(uninspected);
+    const withInspection = await best();
+    // Relative, not absolute, so a loaded machine does not make it flaky. The brand probing in the
+    // previous revision made this ratio about 13, so 3 leaves room for noise and still catches it.
+    expect(withInspection).toBeLessThan(without * 3 + 20);
+  }, 120_000);
+
+  it("a payload key of 100,000 characters does not put the whole key in the reason (verify)", async () => {
+    const key = "a".repeat(100_000);
+    const entry = (await forgeLive({ payload: { [key]: new Date(0) } })) as unknown as ChainEntry;
+    const reason = (await verifyChain([entry])).reason ?? "";
+    expect(reason).toMatch(/^entry 0 is not plain JSON data/);
+    expect(reason.length).toBeLessThan(600);
+  });
+
+  it("a payload key of 100,000 characters does not put the whole key in the error (append)", async () => {
+    const key = "a".repeat(100_000);
+    const error = await appendEntry([], { [key]: new Date(0) }).catch((e: unknown) => e as Error);
+    expect(error).toBeInstanceOf(TypeError);
+    expect((error as Error).message.length).toBeLessThan(600);
+  });
+
+  it("a deep path of long keys stays bounded", async () => {
+    let payload: unknown = new Date(0);
+    for (let i = 0; i < 100; i++) payload = { [`k${i}`.padEnd(70, "x")]: payload };
+    const entry = (await forgeLive({ payload })) as unknown as ChainEntry;
+    const reason = (await verifyChain([entry])).reason ?? "";
+    expect(reason.length).toBeLessThan(600);
+    await expect(appendEntry([], payload)).rejects.toSatisfy((e: Error) => e.message.length < 600);
+  });
+
+  it("guard: a short path is still spelled out in full", async () => {
+    const entry = (await forgeLive({ payload: { meta: { list: [1, new Date(0)] } } })) as unknown as ChainEntry;
+    expect((await verifyChain([entry])).reason).toContain("payload.meta.list[1]");
+  });
+
+  it("guard: a Date whose prototype was set to Object.prototype is still refused", async () => {
+    await expect(appendEntry([], Object.setPrototypeOf(new Date(0), Object.prototype))).rejects.toThrow(TypeError);
+  });
+
+  it("guard: boxed values and typed arrays with Object.prototype as prototype are still refused", async () => {
+    for (const exotic of [new Number(1), new String("a"), new Boolean(true), new Uint8Array(1), /a/, new DataView(new ArrayBuffer(1))]) {
+      await expect(appendEntry([], Object.setPrototypeOf(exotic, Object.prototype))).rejects.toThrow(TypeError);
+    }
+  });
+});

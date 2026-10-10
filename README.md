@@ -353,7 +353,11 @@ console.log((await verifyChain(chain, undefined, { hash: sha256HexNodeFallback }
   `toJSON` anywhere on a prototype chain, objects whose prototype is not
   `Object.prototype` (any realm) or null, and objects that carry internal data
   JSON ignores (boxed primitives, Date, Map, Set, RegExp, ArrayBuffer, typed
-  arrays, even with the prototype removed). A Proxy whose traps answer a
+  arrays, even with the prototype removed; the one gap is a Map, Set, WeakMap,
+  WeakSet or ArrayBuffer that was deliberately given `Object.prototype` as its
+  prototype or has own enumerable properties, which is not detected, because
+  telling those apart takes a throwing probe that is too slow to run on every
+  object). A Proxy whose traps answer a
   descriptor query differently from a value read can still show the check one
   object and the hash another. Do not pass Proxies you do not control.
 - **Verification is over parsed JSON values, not bytes.** `verifyChain` sees

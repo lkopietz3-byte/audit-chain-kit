@@ -128,34 +128,48 @@ function isObjectPrototypeLike(proto: object): boolean {
 
 const sliceOf = (proto: object, key: string): ((this: unknown) => unknown) | undefined =>
   Reflect.getOwnPropertyDescriptor(proto, key)?.get as ((this: unknown) => unknown) | undefined;
-const typedArrayProto: object = Object.getPrototypeOf(Uint8Array.prototype) as object;
 
 /**
- * Each of these is an intrinsic that throws a TypeError unless the object has
- * the matching internal slot, and runs no caller code. A hit means the object
- * carries data that `JSON.stringify` does not see (or that it reads through a
- * conversion), whatever its prototype says.
+ * Intrinsics that throw a TypeError unless the object has the matching internal
+ * slot, and run no caller code. Throwing is slow, so these are only the last
+ * resort (see {@link hasInternalData}); the kinds that `Object.prototype.toString`
+ * and `ArrayBuffer.isView` can name without throwing are not repeated here.
  */
-const BRAND_CHECKS: readonly ((value: object) => unknown)[] = [
-  (v) => Number.prototype.valueOf.call(v),
-  (v) => String.prototype.valueOf.call(v),
-  (v) => Boolean.prototype.valueOf.call(v),
-  (v) => BigInt.prototype.valueOf.call(v),
-  (v) => Symbol.prototype.valueOf.call(v),
-  (v) => Date.prototype.getTime.call(v),
+const SLOT_PROBES: readonly ((value: object) => unknown)[] = [
   (v) => Map.prototype.has.call(v, 0),
   (v) => Set.prototype.has.call(v, 0),
   (v) => WeakMap.prototype.has.call(v, v),
   (v) => WeakSet.prototype.has.call(v, v),
-  (v) => sliceOf(RegExp.prototype, "source")?.call(v),
   (v) => sliceOf(ArrayBuffer.prototype, "byteLength")?.call(v),
-  (v) => sliceOf(typedArrayProto, "length")?.call(v),
 ];
 
-function hasInternalData(object: object): boolean {
-  for (const check of BRAND_CHECKS) {
+/**
+ * True if `object` carries data that `JSON.stringify` does not see, whatever its
+ * prototype says (a Date, RegExp, boxed primitive, Map, Set, typed array...).
+ * Runs on an object that already passed the prototype and own-key checks, so
+ * it has no own symbol keys and its prototype is null or Object.prototype-like.
+ *
+ * Cheap tier, for every object, never throws: a tag hook on the prototype is
+ * refused; `Object.prototype.toString` names Date, RegExp, Boolean, Number,
+ * String and Error by internal slot; `ArrayBuffer.isView` names typed arrays and
+ * DataView.
+ *
+ * Slow tier, only for an object with no own keys and a prototype other than this
+ * realm's `Object.prototype` (so a plain `{}` never pays for it): the throwing
+ * probes for Map, Set, WeakMap, WeakSet and ArrayBuffer. Known gap: one of
+ * those five whose prototype was set to this realm's `Object.prototype`, or that
+ * has own enumerable properties, is not detected. Building one takes a
+ * deliberate `Object.setPrototypeOf`; it is not something a parsed or ordinary
+ * object can be.
+ */
+function hasInternalData(object: object, proto: object | null, hasOwnKeys: boolean): boolean {
+  if (proto !== null && Reflect.getOwnPropertyDescriptor(proto, Symbol.toStringTag) !== undefined) return true;
+  if (Object.prototype.toString.call(object) !== "[object Object]") return true;
+  if (ArrayBuffer.isView(object)) return true;
+  if (hasOwnKeys || proto === Object.prototype) return false;
+  for (const probe of SLOT_PROBES) {
     try {
-      check(object);
+      probe(object);
       return true;
     } catch {
       // Not this kind of object.
@@ -201,14 +215,12 @@ function inspectObject(
   if (inheritsToJSON(object)) {
     return problem("lossy", path, "an object with a toJSON hook on its prototype chain (JSON would call it)");
   }
-  const proto: unknown = Object.getPrototypeOf(object);
-  if (!anyPrototype && proto !== null && !isObjectPrototypeLike(proto as object)) {
+  const proto = Object.getPrototypeOf(object) as object | null;
+  if (!anyPrototype && proto !== null && proto !== Object.prototype && !isObjectPrototypeLike(proto)) {
     return problem("lossy", path, "an object that is not plain (a Date, Map, Set, boxed primitive or class instance)");
   }
-  if (hasInternalData(object)) {
-    return problem("lossy", path, "an object with internal data JSON does not see (a Date, Map, Set, boxed primitive or similar)");
-  }
-  for (const key of Reflect.ownKeys(object)) {
+  const keys = Reflect.ownKeys(object);
+  for (const key of keys) {
     if (typeof key === "symbol") return problem("lossy", path, "an object with a symbol-keyed property (JSON drops it)");
     const descriptor = Reflect.getOwnPropertyDescriptor(object, key);
     path.push(key);
@@ -221,6 +233,10 @@ function inspectObject(
     } finally {
       path.pop();
     }
+  }
+  // The root may be a class instance (an ORM row); only its own fields are used, so its internal data is moot.
+  if (!anyPrototype && hasInternalData(object, proto, keys.length > 0)) {
+    return problem("lossy", path, "an object with internal data JSON does not see (a Date, Map, Set, boxed primitive or similar)");
   }
   return undefined;
 }

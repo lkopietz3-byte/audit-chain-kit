@@ -534,15 +534,22 @@ function describeProblem(found: JsonProblem): string {
 }
 
 const PLAIN_KEY = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+const LONGEST_PATH = 200;
 
-/** `payload.meta[2]["odd key"]`; keys that are not simple ASCII names are quoted and escaped like any other caller text. */
+/**
+ * `payload.meta[2]["odd key"]`. Keys that are not short simple ASCII names are
+ * quoted, escaped and cut like any other caller text, and the whole path stops
+ * growing past 200 characters, so a hostile key or a deep path cannot make a
+ * reason or error message huge.
+ */
 function describePath(path: readonly (string | number)[]): string {
   if (path.length === 0) return "the entry itself";
-  return path
-    .map((part, position) => {
-      if (typeof part === "number") return `[${part}]`;
-      if (PLAIN_KEY.test(part)) return position === 0 ? part : `.${part}`;
-      return `[${describeString(part)}]`;
-    })
-    .join("");
+  let text = "";
+  for (const [position, part] of path.entries()) {
+    if (text.length > LONGEST_PATH) return `${text}...`;
+    if (typeof part === "number") text += `[${part}]`;
+    else if (part.length <= LONGEST_STRING && PLAIN_KEY.test(part)) text += position === 0 ? part : `.${part}`;
+    else text += `[${describeString(part)}]`;
+  }
+  return text;
 }

@@ -86,7 +86,9 @@ export interface ChainAnchor {
 export interface VerifyOptions {
   /**
    * Report the chain invalid if it has fewer entries than this. A
-   * non-negative integer; anything else throws a TypeError.
+   * non-negative integer; anything else, including a key that is present
+   * with the value `undefined`, throws a TypeError. Leave the key out to skip
+   * the check.
    *
    * This catches entries deleted from the end only if nobody appended new
    * entries afterwards. Appending needs no secret, so someone who can edit
@@ -101,7 +103,9 @@ export interface VerifyOptions {
    * `entryHash`. This detects any rewrite of entries `0..anchor.index`,
    * including a full recomputation from genesis, and truncation below the
    * anchor. Entries after the anchor are only checked for internal
-   * consistency. An invalid anchor object throws a TypeError.
+   * consistency. An invalid anchor object throws a TypeError, and so does a
+   * key that is present with the value `undefined` (leave the key out to
+   * skip the check).
    */
   anchor?: ChainAnchor;
   /** Hash function. Defaults to the Web Crypto `sha256Hex`. Must match the one used to append. */
@@ -125,4 +129,14 @@ export interface VerifyResult {
   brokenAtIndex: number | null;
   /** Human-readable explanation of the failure, or `null` when valid. */
   reason: string | null;
+  /**
+   * How many entries were fully checked (links, hash and index) before the
+   * result was decided: the whole chain when `valid` is true, and the entries
+   * before the first failing one otherwise (`0` for a non-array chain). An
+   * empty chain is `valid: true` with `entriesChecked: 0`: nothing was
+   * verified, so read `entriesChecked` before treating a result as evidence
+   * that a log has content. `expectedMinLength` and `anchor` are the checks
+   * that say how many entries there should be.
+   */
+  entriesChecked: number;
 }

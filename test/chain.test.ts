@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { appendEntry, verifyChain, GENESIS_HASH } from "../src/index.js";
-import type { ChainEntry } from "../src/index.js";
+import { appendEntry, canonicalJSON, verifyChain, GENESIS_HASH } from "../src/index.js";
+import type { Canonicalizer, ChainEntry } from "../src/index.js";
 
 async function buildValidChain(): Promise<readonly ChainEntry<{ note: string }>[]> {
   let chain: readonly ChainEntry<{ note: string }>[] = [];
@@ -75,7 +75,7 @@ describe("verifyChain — valid chain", () => {
   it("reports valid: true for a freshly appended chain", async () => {
     const chain = await buildValidChain();
     const result = await verifyChain(chain);
-    expect(result).toEqual({ valid: true, brokenAtIndex: null, reason: null });
+    expect(result).toEqual({ valid: true, brokenAtIndex: null, reason: null, entriesChecked: 3 });
   });
 
   it("reports valid: true for an empty chain", async () => {
@@ -110,21 +110,30 @@ describe("verifyChain — mutated payload", () => {
 
 describe("verifyChain — persistence round trip", () => {
   const jsonRoundTrip = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+  // appendEntry with the default canonicalizer now refuses payloads that JSON would change (a Date, an
+  // undefined field). A wrapper is a custom canonicalizer, so it is not checked and writes the same bytes
+  // the old lenient default did. What is stored, and read back as JSON text, is unchanged.
+  const lenient: Canonicalizer = (value) => canonicalJSON(value);
 
   it("still verifies after a JSON round trip when a payload has undefined fields", async () => {
     type Payload = { note: string; optional?: string | undefined; list?: (number | undefined)[] };
-    let chain = await appendEntry<Payload>([], { note: "a", optional: undefined });
-    chain = await appendEntry<Payload>(chain, { note: "b", list: [1, undefined, 3] });
-    expect(await verifyChain(jsonRoundTrip(chain))).toEqual({ valid: true, brokenAtIndex: null, reason: null });
+    let chain = await appendEntry<Payload>([], { note: "a", optional: undefined }, lenient);
+    chain = await appendEntry<Payload>(chain, { note: "b", list: [1, undefined, 3] }, lenient);
+    expect(await verifyChain(jsonRoundTrip(chain))).toEqual({
+      valid: true,
+      brokenAtIndex: null,
+      reason: null,
+      entriesChecked: 2,
+    });
   });
 
   it("still verifies after a JSON round trip when a payload holds a Date", async () => {
-    const chain = await appendEntry([], { at: new Date("2020-01-02T03:04:05.000Z") });
+    const chain = await appendEntry([], { at: new Date("2020-01-02T03:04:05.000Z") }, lenient);
     expect((await verifyChain(jsonRoundTrip(chain))).valid).toBe(true);
   });
 
   it("detects a changed Date inside a payload", async () => {
-    const chain = await appendEntry([], { at: new Date("2020-01-02T03:04:05.000Z") });
+    const chain = await appendEntry([], { at: new Date("2020-01-02T03:04:05.000Z") }, lenient);
     const tampered = [{ ...chain[0]!, payload: { at: new Date("1999-01-01T00:00:00.000Z") } }];
     const result = await verifyChain(tampered);
     expect(result.valid).toBe(false);

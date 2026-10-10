@@ -7,7 +7,7 @@ import {
 } from 'audit-chain-kit';
 import { sha256HexNodeFallback } from 'audit-chain-kit/hash-node-fallback';
 
-const VALID = { valid: true, brokenAtIndex: null, reason: null };
+const valid = (entriesChecked) => ({ valid: true, brokenAtIndex: null, reason: null, entriesChecked });
 
 // Hashers: NIST vector, non-ASCII parity, non-string rejection.
 const ABC = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
@@ -31,7 +31,7 @@ const hash0 = 'e2e95ac52a1f387f89f091b90d6a6caf1e2f68acffabe3b4243ed887acab76ca'
 assert.equal(await sha256Hex(record0), hash0);
 assert.deepEqual(
   await verifyChain([{ formatVersion: FORMAT_VERSION, index: 0, payload: { action: 'report.created', by: 'user_1' }, prevHash: GENESIS_HASH, createdAt: '2026-01-01T00:00:00.000Z', entryHash: hash0 }]),
-  VALID,
+  valid(1),
 );
 
 // A chain hashed without formatVersion (pre-round-2 format) is rejected with
@@ -44,19 +44,21 @@ assert.match(preV1Result.reason, /formatVersion/);
 
 // Build a chain, store it as JSON, read it back, verify.
 let chain = await appendEntry([], { action: 'report.created', by: 'user_1' });
-chain = await appendEntry(chain, { action: 'report.exported', by: 'user_1', at: new Date() });
-chain = await appendEntry(chain, { action: 'report.shared', with: undefined });
+chain = await appendEntry(chain, { action: 'report.exported', by: 'user_1', at: new Date().toISOString() });
+await assert.rejects(appendEntry(chain, { action: 'report.exported', at: new Date() }), TypeError);
+await assert.rejects(appendEntry(chain, { action: 'report.shared', with: undefined }), TypeError);
+chain = await appendEntry(chain, { action: 'report.shared', with: null });
 assert.equal(chain.length, 3);
 assert.ok(Object.isFrozen(chain) && Object.isFrozen(chain[2]));
 assert.equal(chain[0].prevHash, GENESIS_HASH);
 assert.equal(chain[2].prevHash, chain[1].entryHash);
 const stored = JSON.parse(JSON.stringify(chain));
-assert.deepEqual(await verifyChain(stored), VALID);
-assert.deepEqual(await verifyChain(stored, undefined, { hash: sha256HexNodeFallback }), VALID);
+assert.deepEqual(await verifyChain(stored), valid(3));
+assert.deepEqual(await verifyChain(stored, undefined, { hash: sha256HexNodeFallback }), valid(3));
 
 // Tampering the chain's own checks catch.
 const edited = structuredClone(stored); edited[1].payload.by = 'someone_else';
-assert.deepEqual(await verifyChain(edited), { valid: false, brokenAtIndex: 1, reason: 'entry 1 content does not match its entryHash (a hashed field was changed, added, or removed after appending)' });
+assert.deepEqual(await verifyChain(edited), { valid: false, brokenAtIndex: 1, reason: 'entry 1 content does not match its entryHash (a hashed field was changed, added, or removed after appending)', entriesChecked: 1 });
 assert.equal((await verifyChain([stored[0], stored[2]])).brokenAtIndex, 1);
 assert.equal((await verifyChain([stored[1], stored[0], stored[2]])).brokenAtIndex, 0);
 assert.equal((await verifyChain({})).valid, false);
@@ -66,11 +68,11 @@ const anchor = { index: chain[2].index, entryHash: chain[2].entryHash };
 let forged = stored.slice(0, 1);
 forged = await appendEntry(forged, { action: 'fake' });
 forged = await appendEntry(forged, { action: 'fake' });
-assert.deepEqual(await verifyChain(forged, undefined, { expectedMinLength: 3 }), VALID);
+assert.deepEqual(await verifyChain(forged, undefined, { expectedMinLength: 3 }), valid(3));
 const anchored = await verifyChain(forged, undefined, { expectedMinLength: 3, anchor });
 assert.equal(anchored.valid, false);
 assert.equal(anchored.brokenAtIndex, 2);
-assert.deepEqual(await verifyChain(stored, undefined, { anchor }), VALID);
+assert.deepEqual(await verifyChain(stored, undefined, { anchor }), valid(3));
 await assert.rejects(verifyChain(stored, undefined, { expectedMinLength: Number.NaN }), TypeError);
 
 // Snapshot semantics: entries shortened while a hash is pending cannot hide a
@@ -101,7 +103,7 @@ await assert.rejects(verifyChain(stored, undefined, { expectedMinLength: Number.
 
 // A malformed formatVersion is reported, never thrown.
 const oddVersion = await verifyChain([{ ...stored[0], formatVersion: 1n }]);
-assert.deepEqual(oddVersion, { valid: false, brokenAtIndex: 0, reason: 'entry 0 has formatVersion 1n; this verifier requires "audit-chain-kit/v1"' });
+assert.deepEqual(oddVersion, { valid: false, brokenAtIndex: 0, reason: 'entry 0 has formatVersion 1n; this verifier requires "audit-chain-kit/v1"', entriesChecked: 0 });
 
 // appendEntry refuses a partial chain.
 await assert.rejects(appendEntry([stored[2]], { action: 'x' }), RangeError);

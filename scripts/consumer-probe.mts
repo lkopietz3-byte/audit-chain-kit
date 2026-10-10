@@ -44,6 +44,7 @@ export async function probe(): Promise<VerifyResult> {
   const result: VerifyResult = await verifyChain(chain, undefined, options);
   const broken: number | null = result.brokenAtIndex;
   const reason: string | null = result.reason;
-  void broken; void reason; void record; void genesis;
+  const checked: number = result.entriesChecked;
+  void broken; void reason; void checked; void record; void genesis;
   return result;
 }

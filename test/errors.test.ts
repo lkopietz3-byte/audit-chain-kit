@@ -28,7 +28,7 @@ describe("verifyChain: an entry that is not a usable object", () => {
   ])("rejects %s at its index, with the shape reason", async (_label, make) => {
     const e0 = await one();
     const result = await verifyChain([e0, make(e0)] as unknown as ChainEntry<Note>[]);
-    expect(result).toEqual({ valid: false, brokenAtIndex: 1, reason: shape(1) });
+    expect(result).toEqual({ valid: false, brokenAtIndex: 1, reason: shape(1), entriesChecked: 1 });
   });
 
   it("rejects an entry whose prevHash is inherited rather than an own field", async () => {
@@ -36,11 +36,16 @@ describe("verifyChain: an entry that is not a usable object", () => {
     const inherited = Object.assign(Object.create({ prevHash: e0.prevHash }) as object, { ...e0, prevHash: undefined });
     delete (inherited as { prevHash?: unknown }).prevHash;
     const result = await verifyChain([inherited] as unknown as ChainEntry<Note>[]);
-    expect(result).toEqual({ valid: false, brokenAtIndex: 0, reason: shape(0) });
+    expect(result).toEqual({ valid: false, brokenAtIndex: 0, reason: shape(0), entriesChecked: 0 });
   });
 
   it("reports a bad first entry at index 0", async () => {
-    expect(await verifyChain([{}] as unknown as ChainEntry<Note>[])).toEqual({ valid: false, brokenAtIndex: 0, reason: shape(0) });
+    expect(await verifyChain([{}] as unknown as ChainEntry<Note>[])).toEqual({
+      valid: false,
+      brokenAtIndex: 0,
+      reason: shape(0),
+      entriesChecked: 0,
+    });
   });
 });
 
@@ -68,6 +73,7 @@ describe("verifyChain: option and anchor errors", () => {
       valid: true,
       brokenAtIndex: null,
       reason: null,
+      entriesChecked: 1,
     });
     expect(await verifyChain([e0], undefined, { anchor: { index: Number.MAX_SAFE_INTEGER, entryHash: "x" } })).toMatchObject({
       valid: false,
@@ -87,16 +93,19 @@ describe("verifyChain: option and anchor errors", () => {
       valid: false,
       brokenAtIndex: null,
       reason: "chain has 1 entries but expectedMinLength is 2 (entries may have been deleted from the end)",
+      entriesChecked: 1,
     });
     expect(await verifyChain([e0], undefined, { anchor: { index: 1, entryHash: "x" } })).toEqual({
       valid: false,
       brokenAtIndex: null,
       reason: "chain has 1 entries, so there is no entry at anchor index 1 (entries were deleted from the end)",
+      entriesChecked: 1,
     });
     expect(await verifyChain([e0], undefined, { anchor: { index: 0, entryHash: "x" } })).toEqual({
       valid: false,
       brokenAtIndex: 0,
       reason: "entry 0 entryHash does not match the anchor (entries up to 0 were rewritten or replaced)",
+      entriesChecked: 1,
     });
   });
 
@@ -107,7 +116,12 @@ describe("verifyChain: option and anchor errors", () => {
   });
 
   it("a non-array chain has the documented reason", async () => {
-    expect(await verifyChain({} as unknown as ChainEntry[])).toEqual({ valid: false, brokenAtIndex: null, reason: "chain is not an array" });
+    expect(await verifyChain({} as unknown as ChainEntry[])).toEqual({
+      valid: false,
+      brokenAtIndex: null,
+      reason: "chain is not an array",
+      entriesChecked: 0,
+    });
   });
 });
 

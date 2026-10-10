@@ -222,7 +222,12 @@ describe("verifyChain: a blank anchor hash is a caller bug (class 7)", () => {
   it("still accepts a visible hash, including one with non-hex characters (custom hashers)", async () => {
     const entry = await tail();
     const options = { anchor: { index: 0, entryHash: entry.entryHash } } satisfies VerifyOptions;
-    expect(await verifyChain([entry], undefined, options)).toEqual({ valid: true, brokenAtIndex: null, reason: null });
+    expect(await verifyChain([entry], undefined, options)).toEqual({
+      valid: true,
+      brokenAtIndex: null,
+      reason: null,
+      entriesChecked: 1,
+    });
     await expect(verifyChain([], undefined, { anchor: { index: 0, entryHash: " x " } })).resolves.toMatchObject({
       valid: false,
     });
@@ -268,7 +273,12 @@ describe("verifyChain and appendEntry: argument shapes (class 6, class 9)", () =
   it("verifyChain accepts every documented option key together", async () => {
     const entry = await tail();
     const options = { expectedMinLength: 1, anchor: entry, hash: sha256Hex } satisfies VerifyOptions;
-    expect(await verifyChain([entry], canonicalJSON, options)).toEqual({ valid: true, brokenAtIndex: null, reason: null });
+    expect(await verifyChain([entry], canonicalJSON, options)).toEqual({
+      valid: true,
+      brokenAtIndex: null,
+      reason: null,
+      entriesChecked: 1,
+    });
   });
 
   it.each([

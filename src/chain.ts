@@ -1,5 +1,7 @@
-import { canonicalJSON } from "./canonicalize.js";
+import { canonicalJSON, MAX_NESTING_DEPTH, NestingDepthError } from "./canonicalize.js";
 import { sha256Hex } from "./hash.js";
+import { findJsonProblem } from "./json-data.js";
+import type { JsonProblem } from "./json-data.js";
 import { FORMAT_VERSION, GENESIS_HASH } from "./types.js";
 import type { Canonicalizer, ChainAnchor, ChainEntry, Hasher, VerifyOptions, VerifyResult } from "./types.js";
 
@@ -41,10 +43,19 @@ export type {
  * the payload is read by reference when it is canonicalized.
  *
  * @param chain - the existing chain, or `[]` to start one
- * @param payload - data for the new entry (see `canonicalJSON` for how non-JSON values are converted)
+ * With the default `canonicalJSON`, the payload must be plain JSON data held
+ * in memory exactly as JSON would store it: no `undefined`, functions,
+ * symbols, `NaN`/`Infinity`, `toJSON` (so no `Date`), `Map`/`Set`, class
+ * instances, getters, non-enumerable properties, array holes, cycles, or
+ * nesting deeper than 255 levels. Otherwise the object you hold would not be
+ * the object that was hashed, and `verifyChain` could not tell them apart.
+ * Convert such values first (for example `date.toISOString()`). A custom
+ * `canonicalize` is not checked.
+ *
+ * @param payload - data for the new entry (plain JSON data when using the default canonicalizer)
  * @param canonicalize - defaults to `canonicalJSON`; must be synchronous and return a string
  * @param hash - defaults to `sha256Hex` (Web Crypto); must resolve to a string
- * @throws TypeError if `chain` is not an array (or its length is not a non-negative integer), its last entry has no string `entryHash`, `canonicalize` or `hash` is not a function, or either returns the wrong type
+ * @throws TypeError if `chain` is not an array (or its length is not a non-negative integer), its last entry has no string `entryHash`, `canonicalize` or `hash` is not a function, either returns the wrong type, or (default canonicalizer only) the payload is not plain JSON data
  * @throws RangeError if the last entry's `index` is not `chain.length - 1` (for example, only the tail was passed)
  * @throws whatever `canonicalize` or `hash` throws (for example, `canonicalJSON` on a cyclic payload)
  */
@@ -89,6 +100,15 @@ export async function appendEntry<TPayload = unknown>(
     createdAt: new Date().toISOString(),
   };
 
+  if (canonicalize === canonicalJSON) {
+    const found = findJsonProblem(record);
+    if (found !== undefined) {
+      throw new TypeError(
+        `appendEntry: the payload is not plain JSON data: ${describeProblem(found)}; convert it to JSON values first`,
+      );
+    }
+  }
+
   const canonical = canonicalize(record);
   if (typeof canonical !== "string") {
     throw new TypeError(`appendEntry: canonicalize must return a string (synchronously), got ${describe(canonical)}`);
@@ -114,7 +134,9 @@ export async function appendEntry<TPayload = unknown>(
  * `entryHash` equals the hash of the canonicalized entry minus `entryHash`
  * (so any added, removed or changed field fails); and `index` equals its
  * position. Then the optional `expectedMinLength` and `anchor` checks.
- * Returns the first failure found.
+ * Returns the first failure found, with `entriesChecked`: how many entries
+ * passed every per-entry check before the result was decided (an empty chain
+ * is `valid: true` with `entriesChecked: 0`).
  *
  * What a valid result means: the chain is internally consistent. It does
  * NOT mean nobody changed it. There is no secret key, so anyone who can edit
@@ -139,6 +161,15 @@ export async function appendEntry<TPayload = unknown>(
  * invalid entry, and nothing after the first entry that is not an object is
  * read.
  *
+ * With the default `canonicalJSON`, each entry must also be exactly its JSON
+ * form in memory (the same rule `appendEntry` applies to payloads, applied to
+ * the whole entry; the entry object itself may be a class instance, such as an
+ * ORM row, if its own fields are plain data): an entry that holds a `Date`, `undefined`, a function, a
+ * symbol, `NaN`, a getter, a non-enumerable or symbol-keyed field, a cycle or
+ * nesting deeper than 255 levels in the payload is reported invalid at its
+ * index instead of being verified as something it is not. A parsed JSON text
+ * always passes this check. A custom `canonicalize` is not checked.
+ *
  * Malformed input fails closed: a non-array `chain` (or one whose `length` is
  * not a non-negative integer) returns `{ valid: false }` rather than throwing.
  * Reasons built from caller values are escaped and bounded: control,
@@ -149,7 +180,7 @@ export async function appendEntry<TPayload = unknown>(
  * @param chain - the entries to check, in order
  * @param canonicalize - must be the canonicalizer used to append; defaults to `canonicalJSON`; must be synchronous and return a string
  * @param options - `expectedMinLength`, `anchor`, `hash` (see {@link VerifyOptions}); `undefined` or a plain object, and no other keys
- * @throws TypeError if `options` is not a plain object or has an unknown key, `expectedMinLength` or `anchor` is malformed (including an `anchor.entryHash` that is blank), `canonicalize` or `hash` is not a function, or either returns the wrong type (a caller bug, not a chain problem)
+ * @throws TypeError if `options` is not a plain object or has an unknown key, `expectedMinLength` or `anchor` is present but `undefined` or malformed (including an `anchor.entryHash` that is blank), `canonicalize` or `hash` is not a function, or either returns the wrong type (a caller bug, not a chain problem)
  * @throws whatever `canonicalize` or `hash` throws
  */
 export async function verifyChain<TPayload = unknown>(
@@ -177,6 +208,14 @@ export async function verifyChain<TPayload = unknown>(
     hashOption = options.hash;
     minLength = options.expectedMinLength;
     anchorOption = options.anchor;
+    // A key that is present but undefined (for example, a lookup that found
+    // nothing) would otherwise skip the check it was meant to switch on.
+    if (minLength === undefined && "expectedMinLength" in options) {
+      throw new TypeError("verifyChain: expectedMinLength is present but undefined; leave the key out to skip the check");
+    }
+    if (anchorOption === undefined && "anchor" in options) {
+      throw new TypeError("verifyChain: anchor is present but undefined; leave the key out to skip the check");
+    }
   }
   if (hashOption !== undefined) assertFunction("verifyChain", "options.hash", hashOption);
   const hash = hashOption === undefined ? sha256Hex : (hashOption as Hasher);
@@ -185,47 +224,84 @@ export async function verifyChain<TPayload = unknown>(
   }
   const anchor = anchorOption === undefined ? undefined : snapshotAnchor(anchorOption);
 
-  if (!isArrayValue(chain)) {
-    return { valid: false, brokenAtIndex: null, reason: "chain is not an array" };
+  let length: unknown;
+  try {
+    if (!isArrayValue(chain)) {
+      return { valid: false, brokenAtIndex: null, reason: "chain is not an array", entriesChecked: 0 };
+    }
+    length = chain.length;
+  } catch {
+    return { valid: false, brokenAtIndex: null, reason: "chain could not be read (a proxy or getter threw)", entriesChecked: 0 };
   }
-  const length: unknown = chain.length;
   if (!isIndex(length)) {
-    return { valid: false, brokenAtIndex: null, reason: `chain length is not a non-negative integer (got ${describe(length)})` };
+    return {
+      valid: false,
+      brokenAtIndex: null,
+      reason: `chain length is not a non-negative integer (got ${describe(length)})`,
+      entriesChecked: 0,
+    };
   }
 
   // Snapshot every entry now, before the first await. The walk below uses only
   // `snapshots`, never `chain`.
-  const snapshots = snapshotEntries(chain, length);
+  const checkJson = canonicalize === canonicalJSON;
+  const snapshots = snapshotEntries(chain, length, checkJson);
+  let checked = 0;
+  const invalid = (brokenAtIndex: number | null, reason: string): VerifyResult => ({
+    valid: false,
+    brokenAtIndex,
+    reason,
+    entriesChecked: checked,
+  });
 
   let expectedPrev = GENESIS_HASH;
   let verifiedAnchorHash: string | undefined;
   for (let i = 0; i < snapshots.length; i++) {
-    const entry = snapshots[i];
+    const entry = snapshots[i]!;
 
-    if (entry === undefined) {
-      return { valid: false, brokenAtIndex: i, reason: `entry ${i} is not an object with string prevHash and entryHash` };
+    if (entry.unusable !== undefined) {
+      return invalid(
+        i,
+        entry.unusable === "unreadable"
+          ? `entry ${i} could not be read (a proxy or getter threw)`
+          : `entry ${i} is not an object with string prevHash and entryHash`,
+      );
     }
 
     if (entry.formatVersion !== FORMAT_VERSION) {
-      return {
-        valid: false,
-        brokenAtIndex: i,
-        reason:
-          entry.formatVersion === undefined
-            ? `entry ${i} has no formatVersion; this verifier requires ${JSON.stringify(FORMAT_VERSION)}`
-            : `entry ${i} has formatVersion ${describe(entry.formatVersion)}; this verifier requires ${JSON.stringify(FORMAT_VERSION)}`,
-      };
+      return invalid(
+        i,
+        entry.formatVersion === undefined
+          ? `entry ${i} has no formatVersion; this verifier requires ${JSON.stringify(FORMAT_VERSION)}`
+          : `entry ${i} has formatVersion ${describe(entry.formatVersion)}; this verifier requires ${JSON.stringify(FORMAT_VERSION)}`,
+      );
     }
 
     if (entry.prevHash !== expectedPrev) {
-      return {
-        valid: false,
-        brokenAtIndex: i,
-        reason: `entry ${i} prevHash does not match the preceding entry's hash (link severed, entries reordered, or an entry was removed or inserted)`,
-      };
+      return invalid(
+        i,
+        `entry ${i} prevHash does not match the preceding entry's hash (link severed, entries reordered, or an entry was removed or inserted)`,
+      );
     }
 
-    const canonical = canonicalize(entry.record);
+    // A cycle, a BigInt or a runaway depth would make canonicalJSON throw (or
+    // overflow the stack), so these are reported here. Every other difference
+    // between the live entry and its JSON form is reported after the hash and
+    // index checks, so a tampered entry still gets the more specific reason.
+    const jsonProblem = entry.jsonProblem;
+    if (jsonProblem !== undefined && jsonProblem.kind !== "lossy") {
+      return invalid(i, notJsonReason(i, jsonProblem));
+    }
+
+    let canonical: unknown;
+    try {
+      canonical = canonicalize(entry.record);
+    } catch (error) {
+      if (error instanceof NestingDepthError) {
+        return invalid(i, `entry ${i} is nested deeper than ${MAX_NESTING_DEPTH} levels, which is not supported`);
+      }
+      throw error;
+    }
     if (typeof canonical !== "string") {
       throw new TypeError(
         `verifyChain: canonicalize must return a string (synchronously), got ${describe(canonical)} (entry ${i})`,
@@ -236,87 +312,106 @@ export async function verifyChain<TPayload = unknown>(
       throw new TypeError(`verifyChain: hash must resolve to a string, got ${describe(recomputed)} (entry ${i})`);
     }
     if (recomputed !== entry.entryHash) {
-      return {
-        valid: false,
-        brokenAtIndex: i,
-        reason: `entry ${i} content does not match its entryHash (a hashed field was changed, added, or removed after appending)`,
-      };
+      return invalid(
+        i,
+        `entry ${i} content does not match its entryHash (a hashed field was changed, added, or removed after appending)`,
+      );
     }
 
     if (entry.index !== i) {
-      return {
-        valid: false,
-        brokenAtIndex: i,
-        reason: `entry ${i} has index ${describe(entry.index)}; expected ${i}`,
-      };
+      return invalid(i, `entry ${i} has index ${describe(entry.index)}; expected ${i}`);
     }
+
+    if (jsonProblem !== undefined) return invalid(i, notJsonReason(i, jsonProblem));
 
     // `entry.entryHash` is the value that just matched the recomputed hash.
     if (anchor !== undefined && i === anchor.index) verifiedAnchorHash = entry.entryHash;
     expectedPrev = entry.entryHash;
+    checked = i + 1;
   }
 
   if (minLength !== undefined && length < minLength) {
-    return {
-      valid: false,
-      brokenAtIndex: null,
-      reason: `chain has ${length} entries but expectedMinLength is ${minLength} (entries may have been deleted from the end)`,
-    };
+    return invalid(
+      null,
+      `chain has ${length} entries but expectedMinLength is ${minLength} (entries may have been deleted from the end)`,
+    );
   }
 
   if (anchor !== undefined) {
     if (verifiedAnchorHash === undefined) {
-      return {
-        valid: false,
-        brokenAtIndex: null,
-        reason: `chain has ${length} entries, so there is no entry at anchor index ${anchor.index} (entries were deleted from the end)`,
-      };
+      return invalid(
+        null,
+        `chain has ${length} entries, so there is no entry at anchor index ${anchor.index} (entries were deleted from the end)`,
+      );
     }
     if (verifiedAnchorHash !== anchor.entryHash) {
-      return {
-        valid: false,
-        brokenAtIndex: anchor.index,
-        reason: `entry ${anchor.index} entryHash does not match the anchor (entries up to ${anchor.index} were rewritten or replaced)`,
-      };
+      return invalid(
+        anchor.index,
+        `entry ${anchor.index} entryHash does not match the anchor (entries up to ${anchor.index} were rewritten or replaced)`,
+      );
     }
   }
 
-  return { valid: true, brokenAtIndex: null, reason: null };
+  return { valid: true, brokenAtIndex: null, reason: null, entriesChecked: checked };
 }
 
 /** One entry as it was at the call: own fields copied once, scalars pulled out. */
 interface EntrySnapshot {
+  /** Set when the element is not a usable entry; the other fields are then empty and the walk stops here. */
+  readonly unusable: "malformed" | "unreadable" | undefined;
   readonly entryHash: string;
   readonly prevHash: string;
   readonly formatVersion: unknown;
   readonly index: unknown;
   /** The entry minus `entryHash`: a shallow copy, so `payload` is still the caller's object. */
   readonly record: Record<string, unknown>;
+  /** With the default canonicalizer: the first way the live entry differs from its JSON form, if any. */
+  readonly jsonProblem: JsonProblem | undefined;
+}
+
+function unusableEntry(reason: "malformed" | "unreadable"): EntrySnapshot {
+  return { unusable: reason, entryHash: "", prevHash: "", formatVersion: undefined, index: undefined, record: {}, jsonProblem: undefined };
 }
 
 /**
  * Reads `chain[0..length)` once each. Stops after the first element that is
- * not a usable entry (recorded as `undefined`), because the walk reports that
+ * not a usable entry (recorded as unusable), because the walk reports that
  * index and never looks further; this also bounds the work for a huge sparse
  * array. A hole reads as `undefined`, so it is rejected like any non-object.
+ * An element that cannot be read at all (a revoked proxy, a getter that
+ * throws) is unusable too, never an exception.
  */
-function snapshotEntries(chain: readonly unknown[], length: number): (EntrySnapshot | undefined)[] {
-  const snapshots: (EntrySnapshot | undefined)[] = [];
+function snapshotEntries(chain: readonly unknown[], length: number, checkJson: boolean): EntrySnapshot[] {
+  const snapshots: EntrySnapshot[] = [];
   for (let i = 0; i < length; i++) {
-    const entry: unknown = chain[i];
-    if (!isObject(entry)) {
-      snapshots.push(undefined);
-      break;
+    let snapshot: EntrySnapshot;
+    try {
+      snapshot = snapshotEntry(chain[i], checkJson);
+    } catch {
+      snapshot = unusableEntry("unreadable");
     }
-    const { entryHash, ...record } = entry;
-    const prevHash = record["prevHash"];
-    if (typeof entryHash !== "string" || typeof prevHash !== "string") {
-      snapshots.push(undefined);
-      break;
-    }
-    snapshots.push({ entryHash, prevHash, formatVersion: record["formatVersion"], index: record["index"], record });
+    snapshots.push(snapshot);
+    if (snapshot.unusable !== undefined) break;
   }
   return snapshots;
+}
+
+function snapshotEntry(entry: unknown, checkJson: boolean): EntrySnapshot {
+  if (!isObject(entry)) return unusableEntry("malformed");
+  // Inspected before the fields are read, so no getter has run yet.
+  const jsonProblem = checkJson ? findJsonProblem(entry, { rootMayBeInstance: true }) : undefined;
+  const { entryHash, ...record } = entry;
+  const prevHash = record["prevHash"];
+  if (typeof entryHash !== "string" || typeof prevHash !== "string") return unusableEntry("malformed");
+  return {
+    unusable: undefined,
+    entryHash,
+    prevHash,
+    formatVersion: record["formatVersion"],
+    index: record["index"],
+    record,
+    jsonProblem,
+  };
 }
 
 /** Reads `index` and `entryHash` once and validates the copies. */
@@ -349,9 +444,9 @@ function isIndex(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
-/** Empty, or only whitespace and Default_Ignorable_Code_Point characters (zero-width, bidi controls, fillers). */
+/** Empty, or only whitespace, Default_Ignorable_Code_Point characters (zero-width, bidi controls, fillers) and U+2800. */
 function isBlank(value: string): boolean {
-  return /^[\s\p{Default_Ignorable_Code_Point}]*$/u.test(value);
+  return /^[\s\p{Default_Ignorable_Code_Point}\u2800]*$/u.test(value);
 }
 
 function assertFunction(fn: string, name: string, value: unknown): asserts value is (...args: never[]) => unknown {
@@ -359,7 +454,10 @@ function assertFunction(fn: string, name: string, value: unknown): asserts value
 }
 
 const LONGEST_STRING = 80;
-const UNSAFE_CHARACTER = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
+// Controls, format and line-break characters, invisible characters, and every
+// space-like character except the ASCII space: no-break and other Unicode
+// spaces (\p{Zs}) and U+2800 BRAILLE PATTERN BLANK, which draw as nothing.
+const UNSAFE_CHARACTER = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800]|(?! )\p{Zs}/gu;
 
 /**
  * Text for an error message or reason. Never throws and never runs caller
@@ -395,4 +493,31 @@ function describeString(value: string): string {
     return code > 0xffff ? `\\u{${code.toString(16)}}` : `\\u${code.toString(16).padStart(4, "0")}`;
   });
   return value.length > LONGEST_STRING ? `${quoted}... (${value.length} characters)` : quoted;
+}
+
+function notJsonReason(index: number, found: JsonProblem): string {
+  return found.kind === "depth"
+    ? `entry ${index} is nested deeper than ${MAX_NESTING_DEPTH} levels, which is not supported (at ${describePath(found.path)})`
+    : `entry ${index} is not plain JSON data at ${describePath(found.path)}: ${found.why}, so the entry in memory is not what was hashed`;
+}
+
+/** For `appendEntry`: where and what, with the path starting inside the record. */
+function describeProblem(found: JsonProblem): string {
+  return found.kind === "depth"
+    ? `nested deeper than ${MAX_NESTING_DEPTH} levels (the record itself counts as one) at ${describePath(found.path)}`
+    : `${found.why} at ${describePath(found.path)}`;
+}
+
+const PLAIN_KEY = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+/** `payload.meta[2]["odd key"]`; keys that are not simple ASCII names are quoted and escaped like any other caller text. */
+function describePath(path: readonly (string | number)[]): string {
+  if (path.length === 0) return "the entry itself";
+  return path
+    .map((part, position) => {
+      if (typeof part === "number") return `[${part}]`;
+      if (PLAIN_KEY.test(part)) return position === 0 ? part : `.${part}`;
+      return `[${describeString(part)}]`;
+    })
+    .join("");
 }

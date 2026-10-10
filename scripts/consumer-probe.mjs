@@ -3,7 +3,9 @@
 // check asserts a real output, not just that a name is exported.
 import assert from 'node:assert/strict';
 import {
-  appendEntry, canonicalJSON, FORMAT_VERSION, GENESIS_HASH, sha256Hex, verifyChain,
+  appendEntry, appendGapToStore, appendToStore, canonicalJSON, computeEntry, createChainVerifier,
+  createMemoryAppendStore, FORMAT_VERSION, gapPayload, GENESIS_HASH, GENESIS_HEAD, sha256Hex,
+  splitValidPrefix, verifyChain,
 } from 'audit-chain-kit';
 import { sha256HexNodeFallback } from 'audit-chain-kit/hash-node-fallback';
 
@@ -107,5 +109,34 @@ assert.deepEqual(oddVersion, { valid: false, brokenAtIndex: 0, reason: 'entry 0 
 
 // appendEntry refuses a partial chain.
 await assert.rejects(appendEntry([stored[2]], { action: 'x' }), RangeError);
+
+// Store-backed API: computeEntry matches the golden vector, the streaming verifier pages,
+// a stale head is a conflict, and a marked gap is accepted only when allowed.
+{
+  const entry0 = await computeEntry({ prevHash: GENESIS_HASH, index: 0, payload: { action: 'report.created', by: 'user_1' }, createdAt: '2026-01-01T00:00:00.000Z' });
+  assert.equal(entry0.entryHash, hash0);
+  await assert.rejects(computeEntry({ prevHash: GENESIS_HASH, index: 0, payload: {} }), TypeError);
+
+  let tick = 0;
+  const store = createMemoryAppendStore({ now: () => `2026-01-01T00:00:${String(tick++).padStart(2, '0')}.000Z` });
+  for (let i = 0; i < 5; i += 1) assert.equal((await appendToStore(store, { i })).status, 'appended');
+  assert.equal((await appendGapToStore(store, { reason: 'rows lost in a restore', count: 2 })).status, 'appended');
+  assert.equal((await appendToStore(store, { after: 'gap' })).status, 'appended');
+  const entries = JSON.parse(JSON.stringify(store.entries()));
+  const strict = createChainVerifier();
+  for (const e of entries) await strict.push(e);
+  assert.equal((await strict.finish()).valid, false);
+  const lenient = createChainVerifier({ allowMarkedGaps: true });
+  for (const e of entries) await lenient.push(e);
+  const done = await lenient.finish();
+  assert.equal(done.valid, true);
+  assert.deepEqual(done.gaps, [{ atIndex: 7, from: 5, to: 6, reason: 'rows lost in a restore' }]);
+  assert.deepEqual(done.head, { index: 8, hash: entries[entries.length - 1].entryHash });
+  assert.deepEqual((await splitValidPrefix(entries)).firstBreak?.index, 5);
+  assert.deepEqual(GENESIS_HEAD, { index: -1, hash: GENESIS_HASH });
+  const stale = await store.appendIfHead({ expectedHead: GENESIS_HEAD, entry: entry0 });
+  assert.equal(stale.status, 'conflict');
+  assert.equal(gapPayload({ reason: 'x', from: 1, to: 2 }).kind, 'audit-chain-kit/gap');
+}
 
 console.log('consumer probe: audit-chain-kit and audit-chain-kit/hash-node-fallback OK');

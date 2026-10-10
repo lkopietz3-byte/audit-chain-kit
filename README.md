@@ -39,11 +39,13 @@ nothing is signed, and `createdAt` is whatever the writer's clock said.
 - You need to prove who wrote an entry. This package does no signing.
 - You need to detect a rewrite by the operator and have no way to keep an
   anchor outside the operator's control.
-- Several processes append to the same chain at once. `appendEntry` works
-  on an in-memory array and does not serialize writers. Making concurrent,
-  DB-backed appends safe (for example, a transaction-scoped lock around the
-  read-last-hash-then-insert step) is your application's job; this package
-  has no reference implementation for it.
+- Several processes append to the same chain at once and you expect this
+  package to serialize them. `appendEntry` works on an in-memory array and
+  does not. For a database-backed log, use `computeEntry`, `appendToStore`
+  and the streaming verifier described in
+  [Store-backed appends and streaming verification](#store-backed-appends-and-streaming-verification);
+  the "only if the head is still this" check itself lives in your database,
+  not here, and this package ships no SQL, no driver and no concurrency proof.
 - You need to prove one entry is in a log without handing over the whole
   chain (inclusion proofs). This is a linear chain, not a Merkle tree, and
   `verifyChain` always walks from entry 0.
@@ -131,6 +133,11 @@ Test vector (from `test/vectors.test.ts`): this record string
 
 has `entryHash` `e2e95ac52a1f387f89f091b90d6a6caf1e2f68acffabe3b4243ed887acab76ca`
 (`printf '%s' '<record>' | shasum -a 256` gives the same value).
+
+The byte-level rules (key order, number formatting, string escaping, how
+`createdAt` is encoded) are written out with worked examples in
+[docs/CANONICAL-FORM.md](docs/CANONICAL-FORM.md), simple enough to reproduce
+in SQL or another language; the examples are recomputed by a test.
 
 If you reimplement the verifier in another language: keys are sorted by
 UTF-16 code unit, and numbers and strings are written exactly as
@@ -327,7 +334,192 @@ console.log((await verifyChain(chain, undefined, { hash: sha256HexNodeFallback }
 `createdAt`), `ChainEntry<T>` (a record plus `entryHash`), `ChainAnchor`
 (`{ index, entryHash }`), `Canonicalizer` (`(value: unknown) => string`),
 `Hasher` (`(input: string) => Promise<string>`), `VerifyOptions` and
-`VerifyResult` (`valid`, `brokenAtIndex`, `reason`, `entriesChecked`).
+`VerifyResult` (`valid`, `brokenAtIndex`, `reason`, `entriesChecked`). For the
+store-backed API: `ChainHead`, `ComputeEntryInput`, `ChainVerifier`,
+`ChainVerifierOptions`, `ChainVerifierResult`, `MarkedGap`, `SplitResult`,
+`AppendStore`, `StoreHeadResult`, `StoreAppendResult`, `AppendOutcome`.
+
+## Store-backed appends and streaming verification
+
+`appendEntry` and `verifyChain` work on an array in memory and stamp entries
+with the local clock. A real log lives in a database, which holds the lock,
+the last hash and the clock. These functions let the database do that and keep
+the hashing in one place. Nothing here talks to a database; you supply two
+small functions.
+
+```ts
+import {
+  appendToStore, computeEntry, createChainVerifier, splitValidPrefix,
+  type AppendStore,
+} from "audit-chain-kit";
+```
+
+### `computeEntry({ prevHash, index, payload, createdAt })`
+
+Returns the entry with its `entryHash`, using the canonical form above:
+`Promise<Readonly<ChainEntry<T>>>`, frozen, identical to what `appendEntry`
+would produce for the same inputs. `createdAt` is a string you pass in (your
+store's clock); there is no default and it never reads `Date`. It is hashed
+exactly as given, so store and re-read the same text. The payload rules are
+`appendEntry`'s (plain JSON data); a bad payload, a blank `createdAt` or an
+`index` that is not a non-negative safe integer throws a `TypeError`.
+Optional second argument: `{ canonicalize, hash }`.
+
+### `createChainVerifier({ from?, allowMarkedGaps?, hash?, canonicalize? })`
+
+Verifies a chain a page at a time, so you can read a table through a cursor
+without loading it. Memory stays constant however many entries you push.
+
+```ts
+const verifier = createChainVerifier({ from: savedHead, allowMarkedGaps: false });
+let after = savedHead.index;
+for (;;) {
+  const rows = await db.rowsAfter(after, 1000);      // your query, ordered by index
+  if (rows.length === 0) break;
+  for (const row of rows) await verifier.push(toEntry(row));
+  after = rows[rows.length - 1].index;
+}
+const result = await verifier.finish();
+```
+
+- `push(entry)` resolves `true` while the chain is intact and `false` once it
+  is not; after the first break nothing more is hashed. Pushes are queued in
+  order, so you can issue a page and await them together.
+- `finish()` returns `{ status, valid, brokenAtIndex, reason, entriesChecked,
+  head, gaps }`. `status` is `"valid"`, `"broken"` (positive evidence, with the
+  first break's position and reason) or `"error"` (your `hash` or
+  `canonicalize` function threw; that says nothing about the chain, and the
+  thrown value is in `error`). `head` is `{ index, hash }` of the last
+  accepted entry: save it as the next run's `from`, and compare it with a head
+  you keep elsewhere to see a truncated tail.
+- `from` is `{ index, hash }` of the entry just before the first one you push.
+  Leave it out to start at the beginning (`GENESIS_HEAD` is
+  `{ index: -1, hash: GENESIS_HASH }`). A wrong `from` fails at the first
+  entry. It only helps if you keep it somewhere the log's writer cannot change.
+- Each entry is read once, by property descriptor, when you call `push`:
+  getters, `toJSON` and Proxy traps are never run for you, and an entry that is
+  not exactly its JSON form is a break (the same check `verifyChain` makes).
+  Read your database rows into plain objects first, and turn a `bigint` id
+  column into a `number` (node-postgres returns it as a string, which fails
+  verification).
+
+`splitValidPrefix(entries, options?)` runs the same checks over an array and
+returns `{ valid, rest, firstBreak }`: the longest valid prefix, everything
+from the first break on (unverified), and `{ index, reason }` for the break or
+`null`. It is for repair tooling. It never changes its input.
+
+### Marked gaps
+
+A gap record is an ordinary entry that says "positions `from` to `to` hold no
+entries", for a restore or outage that lost rows you cannot recover. Build the
+payload with `gapPayload({ reason, from, to })` and give the entry
+`index = to + 1` (or call `appendGapToStore(store, { reason, count })`, which
+computes both). Its payload is exactly
+`{ kind: "audit-chain-kit/gap", reason, from, to }`.
+
+- With `allowMarkedGaps: true`, the verifier accepts a gap record whose range is
+  exact (`from` is the next unfilled position, `to` is at least `from`, and the
+  record sits at `to + 1`) and lists it in `result.gaps` as
+  `{ atIndex, from, to, reason }`.
+- With `allowMarkedGaps` false or left out, a gap record is a break.
+- A jump in `index` with no gap record is always a break, and so is a gap
+  record whose range does not match its position.
+- The string `audit-chain-kit/gap` as a payload `kind` is reserved. Anyone who
+  can write to the log can write a gap record, so turning the option on means
+  trusting them as much as you trust the rest of the log. A gap record cannot
+  say who deleted what, only that the log admits a hole. Show `reason` only
+  after escaping it: it is free text.
+
+### `AppendStore` and `appendToStore(store, payload, options?)`
+
+```ts
+interface AppendStore<T> {
+  readHead(): Promise<
+    | { status: "ok"; head: { index: number; hash: string }; now: string }
+    | { status: "unavailable"; reason?: string }>;
+  appendIfHead(input: { expectedHead: { index: number; hash: string }; entry: ChainEntry<T> }): Promise<
+    | { status: "appended" } | { status: "conflict" } | { status: "unavailable"; reason?: string }>;
+}
+```
+
+`readHead` returns the newest entry (or `GENESIS_HEAD`) and the store's clock
+in the same call. `appendIfHead` writes the entry only if the head is still
+`expectedHead`, as one atomic step; if another writer got there first it
+returns `conflict` and writes nothing.
+
+`appendToStore` reads the head and clock, computes the entry, calls
+`appendIfHead`, and on `conflict` re-reads and tries again, up to
+`maxAttempts` (default 5, at most 100). It returns
+`{ status: "appended", entry, attempts }`, `{ status: "conflict", attempts }`
+once the attempts are used up, or `{ status: "unavailable", attempts, reason }`.
+It fails closed: a store that returns `unavailable`, throws, rejects or answers
+with anything unexpected gives `unavailable` and the entry is not reported as
+written. It does not retry an `unavailable` (the store could not say whether the
+write happened). A payload that is not plain JSON data throws, as in
+`appendEntry`. The name differs from `appendEntry` because that one stays as it
+is.
+
+`createMemoryAppendStore({ now })` is an in-memory store for tests and
+examples. It is not durable and is not a model of a real database's failure
+modes; there is no conformance suite in this package.
+
+### Postgres recipe
+
+Text only: this package has no SQL and no driver, and nothing in this repo's
+tests talks to a database. The statements below were run once by hand against
+PostgreSQL 17 (the stale-head and race cases returned zero rows and a `23505`
+as described); adapt them to your schema and driver and test them there.
+
+Table, with two unique constraints doing the real work: one position per
+index, and one successor per entry (so two writers cannot fork the chain, even
+across a gap record):
+
+```sql
+create table audit_log (
+  idx         bigint primary key,
+  prev_hash   text   not null unique,
+  entry_hash  text   not null unique,
+  created_at  text   not null,   -- the exact string that was hashed, not a timestamptz
+  payload     jsonb  not null    -- jsonb rejects U+0000 in strings; use text if you cannot rule that out
+);
+```
+
+`readHead`: one query returns the head and the clock, so the clock is read
+after the head it attaches to (database time, not application time). Format
+the clock as one fixed text shape and use the same text for `createdAt`:
+
+```sql
+select coalesce(max(idx), -1) as idx,
+       coalesce((select entry_hash from audit_log order by idx desc limit 1), repeat('0', 64)) as hash,
+       to_char(clock_timestamp() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as now
+from audit_log;
+```
+
+`appendIfHead`, option A (conditional insert, no lock held across your
+application's hashing): insert only if the head is still what you read. Zero
+rows returned, or a unique violation (`23505`), is `conflict`; a connection
+error or timeout is `unavailable`:
+
+```sql
+insert into audit_log (idx, prev_hash, entry_hash, created_at, payload)
+select $1, $2, $3, $4, $5
+where coalesce((select max(idx) from audit_log), -1) = $6          -- expectedHead.index
+  and coalesce((select entry_hash from audit_log order by idx desc limit 1), repeat('0', 64)) = $2
+returning idx;
+```
+
+Option B (advisory lock): in a transaction, `select pg_advisory_xact_lock(<key>)`
+first, then read the head and the clock, compute, insert and commit. The clock
+is then read after the lock is held, so no other writer can commit between the
+read and the insert. This keeps the lock open while your code hashes, so keep
+that window short, and a store written this way holds the transaction between
+`readHead` and `appendIfHead`.
+
+To verify from the table, read rows `where idx > $after order by idx limit
+1000`, map each to `{ formatVersion, index: Number(idx), payload, prevHash:
+prev_hash, createdAt: created_at, entryHash: entry_hash }`, and push them as
+shown above. The hash can also be recomputed in SQL; see
+[docs/CANONICAL-FORM.md](docs/CANONICAL-FORM.md).
 
 ## Honest limits
 
@@ -335,13 +527,24 @@ console.log((await verifyChain(chain, undefined, { hash: sha256HexNodeFallback }
   rewrite it undetectably unless the verifier holds an anchor from outside
   that writer's control. `expectedMinLength` does not help against someone
   who truncates and appends.
+- **Streaming verification has the same limits as `verifyChain`.** A valid
+  result means the pushed entries are consistent with each other and with
+  `from`. It does not detect a truncated tail or a fully recomputed rewrite
+  unless you compare `head` with one you kept outside the writer's control. The
+  atomic "append only if the head is unchanged" step belongs to your database;
+  `createMemoryAppendStore` and the tests here do not prove it holds under real
+  concurrency, and no fault-injection suite for a real database is included.
+  Marked gaps are accepted only when you turn them on, and a gap record is as
+  forgeable as any other entry by someone who can write the log.
 - **Chains are not bound to an identity.** Every chain starts from the same
   `GENESIS_HASH`, so a whole valid chain from one log can be presented as
   another log's. If you keep several chains, put a log id in every payload,
   or keep an anchor per chain.
 - **Timestamps are claims.** `createdAt` is hashed, so it cannot be changed
   later without detection, but nothing checks that it was accurate or that
-  timestamps increase.
+  timestamps increase. With `appendToStore` the time is whatever your store's
+  `readHead` returned; using the database's clock makes it one clock, not a
+  trusted one.
 - **What is hashed is the JSON form.** `canonicalJSON` is lossy in the same
   ways as `JSON.stringify` (`NaN` becomes `null`, a `Map` becomes `{}`,
   `undefined` fields disappear). `appendEntry` and `verifyChain` therefore

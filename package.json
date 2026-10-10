@@ -49,6 +49,7 @@
   "sideEffects": false,
   "files": [
     "dist",
+    "docs/CANONICAL-FORM.md",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"

@@ -11,6 +11,35 @@ vector are unchanged, so chains written by earlier versions still verify when re
 back from JSON. Some in-memory input that was accepted before is now refused (see
 Changed).
 
+### Added
+
+Store-backed append and streaming verification. Existing functions, the record
+format and every existing verdict are unchanged.
+
+- **`computeEntry({ prevHash, index, payload, createdAt })`** returns an entry with
+  its hash, using the same canonical form as `appendEntry`. `createdAt` is a string
+  the caller supplies (a store's clock); it is required and never defaults to the
+  local clock.
+- **`createChainVerifier({ from?, allowMarkedGaps?, hash?, canonicalize? })`**, a
+  streaming verifier with `push(entry)` and `finish()`, so a log can be checked
+  page by page from a database cursor in constant memory. It reports the first break
+  with its position and reason, a `head` to resume from or compare with a stored
+  head, and every accepted marked gap. A throwing `hash` or `canonicalize` gives
+  `status: "error"`, not a false verdict.
+- **`splitValidPrefix(entries, options?)`** returns `{ valid, rest, firstBreak }` for
+  repair tooling.
+- **Marked gaps**: `gapPayload({ reason, from, to })`, `MARKED_GAP_KIND` and
+  `appendGapToStore`. A gap record declares positions `from` to `to` empty and sits at
+  index `to + 1`. It is accepted only with `allowMarkedGaps: true`, only when its range
+  is exact, and is always listed in the result. An index jump without one is a break.
+- **`AppendStore`** (`readHead`, `appendIfHead`), **`appendToStore`** (bounded retry on
+  conflict, fails closed when the store is unavailable, throws or answers oddly) and
+  **`createMemoryAppendStore`** (in-memory, for tests only). `GENESIS_HEAD` is the head
+  of an empty chain.
+- **`docs/CANONICAL-FORM.md`**, the byte-level canonical form with worked examples that
+  a test recomputes, and a Postgres recipe in the README (text only; no SQL or driver
+  dependency).
+
 ### Fixed
 
 - **`anchor: undefined` and `expectedMinLength: undefined` silently skipped their

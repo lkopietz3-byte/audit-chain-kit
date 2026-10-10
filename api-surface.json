@@ -2,9 +2,19 @@
   "audit-chain-kit": [
     "FORMAT_VERSION",
     "GENESIS_HASH",
+    "GENESIS_HEAD",
+    "MARKED_GAP_KIND",
+    "MAX_GAP_REASON_LENGTH",
     "appendEntry",
+    "appendGapToStore",
+    "appendToStore",
     "canonicalJSON",
+    "computeEntry",
+    "createChainVerifier",
+    "createMemoryAppendStore",
+    "gapPayload",
     "sha256Hex",
+    "splitValidPrefix",
     "verifyChain"
   ],
   "audit-chain-kit/hash-node-fallback": [

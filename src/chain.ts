@@ -368,7 +368,7 @@ export async function verifyChain<TPayload = unknown>(
 }
 
 /** One entry as it was at the call: own fields copied once, scalars pulled out. */
-interface EntrySnapshot {
+export interface EntrySnapshot {
   /** Set when the element is not a usable entry; the other fields are then empty and the walk stops here. */
   readonly unusable: "malformed" | "unreadable" | undefined;
   readonly entryHash: string;
@@ -381,7 +381,7 @@ interface EntrySnapshot {
   readonly jsonProblem: JsonProblem | undefined;
 }
 
-function unusableEntry(reason: "malformed" | "unreadable"): EntrySnapshot {
+export function unusableEntry(reason: "malformed" | "unreadable"): EntrySnapshot {
   return { unusable: reason, entryHash: "", prevHash: "", formatVersion: undefined, index: undefined, record: {}, jsonProblem: undefined };
 }
 
@@ -408,7 +408,7 @@ function snapshotEntries(chain: readonly unknown[], length: number, checkJson: b
   return snapshots;
 }
 
-function snapshotEntry(entry: unknown, checkJson: boolean): EntrySnapshot {
+export function snapshotEntry(entry: unknown, checkJson: boolean): EntrySnapshot {
   if (!isObject(entry)) return unusableEntry("malformed");
   // With the default canonicalizer the fields are read as property descriptors, so no getter or
   // proxy get trap runs here; an accessor shows up as a problem and its value as undefined.
@@ -428,7 +428,7 @@ function snapshotEntry(entry: unknown, checkJson: boolean): EntrySnapshot {
 }
 
 /** A copy of an object's own enumerable string-keyed data properties, read as descriptors (no getter runs). */
-function ownDataFields(object: object): Record<string, unknown> {
+export function ownDataFields(object: object): Record<string, unknown> {
   const copy: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const key of Reflect.ownKeys(object)) {
     if (typeof key === "symbol") continue;
@@ -454,27 +454,27 @@ function isArrayValue(value: unknown): boolean {
   return Array.isArray(value);
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
+export function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
 /** An object literal, `Object.create(null)`, or the same from another realm; not a Map, Date, array or class instance. */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (!isObject(value)) return false;
   const proto: unknown = Object.getPrototypeOf(value);
   return proto === null || Object.getPrototypeOf(proto) === null;
 }
 
-function isIndex(value: unknown): value is number {
+export function isIndex(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
 /** Empty, or only whitespace, Default_Ignorable_Code_Point characters (zero-width, bidi controls, fillers) and U+2800. */
-function isBlank(value: string): boolean {
+export function isBlank(value: string): boolean {
   return /^[\s\p{Default_Ignorable_Code_Point}\u2800]*$/u.test(value);
 }
 
-function assertFunction(fn: string, name: string, value: unknown): asserts value is (...args: never[]) => unknown {
+export function assertFunction(fn: string, name: string, value: unknown): asserts value is (...args: never[]) => unknown {
   if (typeof value !== "function") throw new TypeError(`${fn}: ${name} must be a function, got ${describe(value)}`);
 }
 
@@ -493,7 +493,7 @@ const UNSAFE_CHARACTER = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Poi
  * `\uXXXX` (or `\u{X}`), so the text cannot forge a new line or send a
  * terminal escape.
  */
-function describe(value: unknown): string {
+export function describe(value: unknown): string {
   switch (typeof value) {
     case "string":
       return describeString(value);
@@ -520,14 +520,14 @@ function describeString(value: string): string {
   return value.length > LONGEST_STRING ? `${quoted}... (${value.length} characters)` : quoted;
 }
 
-function notJsonReason(index: number, found: JsonProblem): string {
+export function notJsonReason(index: number, found: JsonProblem): string {
   return found.kind === "depth"
     ? `entry ${index} is nested deeper than ${MAX_NESTING_DEPTH} levels, which is not supported (at ${describePath(found.path)})`
     : `entry ${index} is not plain JSON data at ${describePath(found.path)}: ${found.why}, so the entry in memory is not what was hashed`;
 }
 
 /** For `appendEntry`: where and what, with the path starting inside the record. */
-function describeProblem(found: JsonProblem): string {
+export function describeProblem(found: JsonProblem): string {
   return found.kind === "depth"
     ? `nested deeper than ${MAX_NESTING_DEPTH} levels (the record itself counts as one) at ${describePath(found.path)}`
     : `${found.why} at ${describePath(found.path)}`;

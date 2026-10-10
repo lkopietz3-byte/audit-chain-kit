@@ -45,6 +45,18 @@
 - An option key that is present with the value `undefined` (`anchor`,
   `expectedMinLength`) throws; it never skips the check. `VerifyResult` always
   carries `entriesChecked`, and an empty chain is `valid: true` with `0`.
+- The store-backed API (`src/compute.ts`, `src/gap.ts`, `src/verifier.ts`,
+  `src/store.ts`) reuses the same canonical form, JSON-faithfulness check and
+  reason text as `appendEntry` and `verifyChain`, and never reads the clock:
+  `createdAt` is always supplied. The streaming verifier snapshots each entry's
+  own fields when `push` is called, fails only on positive evidence, and reports a
+  throwing `hash` or `canonicalize` as `status: "error"`, never as valid and never
+  as a chain break. A gap record is accepted only with `allowMarkedGaps: true` and an
+  exact range; an index jump otherwise is a break. `appendToStore` returns
+  `unavailable` for any store failure or unrecognized answer and never reports an
+  entry as appended unless the store said `appended`. The table is
+  `test/store-verdict-table.test.ts`; the spec examples are
+  `test/canonical-spec.test.ts`.
 - Zero runtime dependencies. Only `src/hash-node-fallback.ts` imports a Node
   built-in, and `src/index.ts` never imports it (source-scan tests).
 
@@ -52,7 +64,11 @@
 
 - Detection of a rewrite, or of truncate-then-append, without an anchor held
   outside the writer's control. There is no key.
-- Anything about who wrote an entry or whether `createdAt` is accurate.
+- Anything about who wrote an entry or whether `createdAt` is accurate, including
+  a `createdAt` read from a store's clock.
+- That a store's `appendIfHead` is atomic under real concurrency. The in-memory
+  reference store is for tests; a database store, its constraints and its fault
+  behavior are the application's to test.
 - A migration path between format versions. `verifyChain` only accepts the
   current `FORMAT_VERSION`; reading an older or newer format is not
   implemented.

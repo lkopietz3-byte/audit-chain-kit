@@ -104,6 +104,9 @@ function inspect(
 
 const MAX_PROTOTYPE_CHAIN = 1000;
 
+/** Arrays longer than this are checked without listing every key (see inspectArray). */
+const LARGE_ARRAY = 50_000;
+
 /** True if any prototype of `object`, own or inherited, defines `toJSON` (read as a descriptor, so a getter is not run). */
 function inheritsToJSON(object: object): boolean {
   let proto: unknown = Object.getPrototypeOf(object);
@@ -187,7 +190,14 @@ function inspectArray(array: readonly unknown[], path: (string | number)[], ance
   if (typeof length !== "number") return problem("lossy", path, "an array whose length could not be read");
   // A dense array has exactly its indices plus "length". Checking the count first
   // also stops a huge sparse array from being walked index by index.
-  if (Reflect.ownKeys(array).length !== length + 1) {
+  if (length <= LARGE_ARRAY) {
+    if (Reflect.ownKeys(array).length !== length + 1) {
+      return problem("lossy", path, "an array with holes or extra properties (JSON would change it)");
+    }
+  } else if (Object.keys(array).length !== length || Object.getOwnPropertySymbols(array).length !== 0) {
+    // Listing every key of a very large array (one string per index) can exhaust the heap, so
+    // above LARGE_ARRAY the check counts enumerable keys instead. A hole is caught by the
+    // element loop below. Known gap: a non-enumerable named property on such an array.
     return problem("lossy", path, "an array with holes or extra properties (JSON would change it)");
   }
   for (let i = 0; i < length; i++) {

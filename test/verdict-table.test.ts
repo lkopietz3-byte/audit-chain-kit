@@ -1,4 +1,10 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { appendEntry, canonicalJSON, FORMAT_VERSION, GENESIS_HASH, sha256Hex, verifyChain } from "../src/index.js";
 import type { ChainEntry, VerifyOptions } from "../src/index.js";
@@ -732,5 +738,63 @@ describe("verdict table: second review round (cost on the common path, bounded p
     for (const exotic of [new Number(1), new String("a"), new Boolean(true), new Uint8Array(1), /a/, new DataView(new ArrayBuffer(1))]) {
       await expect(appendEntry([], Object.setPrototypeOf(exotic, Object.prototype))).rejects.toThrow(TypeError);
     }
+  });
+});
+
+describe("verdict table: memory does not grow with width (child process, 128 MB heap)", () => {
+  /** Compiles src/ to a temp folder and runs `script` there under a capped heap, so a heap blow-up kills the child, not the test run. */
+  function runCapped(script: string): { status: number | null; stdout: string; stderr: string } {
+    const dir = mkdtempSync(join(tmpdir(), "audit-chain-kit-heap-"));
+    try {
+      const sourceDir = fileURLToPath(new URL("../src/", import.meta.url));
+      for (const name of readdirSync(sourceDir).filter((file) => file.endsWith(".ts") && !file.endsWith(".d.ts"))) {
+        const output = ts.transpileModule(readFileSync(join(sourceDir, name), "utf8"), {
+          compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+        });
+        writeFileSync(join(dir, name.replace(/\.ts$/, ".js")), output.outputText);
+      }
+      writeFileSync(join(dir, "package.json"), '{"type":"module"}');
+      writeFileSync(join(dir, "run.mjs"), script);
+      const result = spawnSync(process.execPath, ["--max-old-space-size=128", "run.mjs"], { cwd: dir, encoding: "utf8", timeout: 100_000 });
+      return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it.each([
+    ["canonicalJSON", 'import { canonicalJSON } from "./index.js"; console.log(canonicalJSON(Array(1_500_000).fill(0)).length);', "3000001"],
+    [
+      "appendEntry",
+      'import { appendEntry } from "./index.js"; const c = await appendEntry([], Array(1_500_000).fill(0)); console.log(c.length);',
+      "1",
+    ],
+    [
+      "verifyChain",
+      'import { appendEntry, verifyChain } from "./index.js"; const c = await appendEntry([], Array(1_500_000).fill(0)); console.log((await verifyChain(JSON.parse(JSON.stringify(c)))).valid);',
+      "true",
+    ],
+  ])("%s handles a 1,500,000-element array", (_name, script, expected) => {
+    const result = runCapped(script);
+    expect(result.stderr).not.toMatch(/heap out of memory/i);
+    expect(result.stdout.trim()).toBe(expected);
+    expect(result.status).toBe(0);
+  }, 120_000);
+});
+
+describe("verdict table: arrays above the large-array threshold are still checked", () => {
+  const big = (): number[] => Array.from({ length: 60_000 }, (_v, i) => i);
+
+  it("accepts a dense 60,000-element array", async () => {
+    expect(await verifyChain(await build([big()]))).toMatchObject({ valid: true, entriesChecked: 1 });
+  });
+
+  it.each([
+    ["an extra enumerable property", () => Object.assign(big(), { note: "x" })],
+    ["a symbol-keyed property", () => Object.assign(big(), { [Symbol("s")]: 1 })],
+    ["a hole", () => { const a = big(); Reflect.deleteProperty(a, 30_000); return a; }],
+    ["an accessor element", () => Object.defineProperty(big(), 5, { get: () => 5, enumerable: true })],
+  ])("refuses %s", async (_label, make) => {
+    await expect(appendEntry([], make())).rejects.toThrow(TypeError);
   });
 });

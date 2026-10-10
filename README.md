@@ -357,7 +357,7 @@ console.log((await verifyChain(chain, undefined, { hash: sha256HexNodeFallback }
   WeakSet or ArrayBuffer that was deliberately given `Object.prototype` as its
   prototype or has own enumerable properties, which is not detected, because
   telling those apart takes a throwing probe that is too slow to run on every
-  object). A Proxy whose traps answer a
+  object). Arrays longer than 50,000 elements are checked by counting enumerable keys, because listing every key of a huge array can exhaust the heap; a non-enumerable named property on such an array is not detected. A Proxy whose traps answer a
   descriptor query differently from a value read can still show the check one
   object and the hash another. Do not pass Proxies you do not control.
 - **Verification is over parsed JSON values, not bytes.** `verifyChain` sees

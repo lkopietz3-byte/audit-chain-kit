@@ -67,7 +67,7 @@ export const canonicalJSON: Canonicalizer = (value: unknown): string => {
   } catch (error) {
     throw isStackOverflow(error) ? new NestingDepthError() : error;
   }
-  assertShallowEnough(parsed);
+  if (parsed !== null && typeof parsed === "object") assertShallowEnough(parsed);
   return serialize(parsed);
 };
 
@@ -75,14 +75,25 @@ function isStackOverflow(error: unknown): boolean {
   return error instanceof RangeError && /call stack/i.test(error.message);
 }
 
-/** Iterative, so measuring a hostile value cannot itself overflow the stack. */
-function assertShallowEnough(root: JsonValue): void {
-  const pending: [JsonValue, number][] = [[root, 1]];
-  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
-    const [value, depth] = next;
-    if (value === null || typeof value !== "object") continue;
-    if (depth > MAX_NESTING_DEPTH) throw new NestingDepthError();
-    for (const child of Array.isArray(value) ? value : Object.values(value)) pending.push([child, depth + 1]);
+/**
+ * Recursive, but the recursion stops at {@link MAX_NESTING_DEPTH} levels, so it
+ * cannot overflow the stack, and it keeps nothing per element: memory use does
+ * not grow with width. Primitives are never visited as frames. A value from
+ * `JSON.parse` has only plain own enumerable properties, so `for...in` visits
+ * exactly its keys without building a key list.
+ */
+function assertShallowEnough(value: JsonValue[] | { [key: string]: JsonValue }, depth = 1): void {
+  if (depth > MAX_NESTING_DEPTH) throw new NestingDepthError();
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const child = value[i];
+      if (child !== null && typeof child === "object") assertShallowEnough(child, depth + 1);
+    }
+    return;
+  }
+  for (const key in value) {
+    const child = value[key];
+    if (child !== null && typeof child === "object") assertShallowEnough(child, depth + 1);
   }
 }
 

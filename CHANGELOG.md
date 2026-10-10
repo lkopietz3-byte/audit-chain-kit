@@ -51,6 +51,10 @@ Changed).
   now take a non-throwing path (`Object.prototype.toString`, `ArrayBuffer.isView`);
   the throwing probes run only for an object with no own keys whose prototype is not
   `Object.prototype`. Verifying 2,000 small entries is back to about the cost of 0.2.1.
+- **The nesting check and the inspection used memory proportional to width.** An array of
+  1,500,000 numbers ran out of heap under `--max-old-space-size=128`, where 0.2.1 did not.
+  Both now keep memory proportional to depth (arrays over 50,000 elements are checked
+  without listing every key; see Honest limits).
 - **A long key put its whole text into a reason or error.** A payload key of 100,000
   characters gave a 100,000-character message. Keys are cut at 80 characters and the
   reported path stops at about 200.

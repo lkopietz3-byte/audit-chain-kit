@@ -405,9 +405,21 @@ function collectRest(entries: readonly unknown[], after: number, length: number,
     keys = undefined;
   }
   if (keys === undefined) {
+    // ownKeys threw: read index by index, skipping holes. If even the hole
+    // check throws, read the element anyway and report recovery as incomplete.
     const stop = Math.min(length, after + 1 + MOST_INDEXES_READ);
-    for (let position = after + 1; position < stop; position++) read(position);
-    return stop === length;
+    let complete = stop === length;
+    for (let position = after + 1; position < stop; position++) {
+      let present: boolean;
+      try {
+        present = Reflect.has(entries, position);
+      } catch {
+        complete = false;
+        present = true;
+      }
+      if (present) read(position);
+    }
+    return complete;
   }
   const positions: number[] = [];
   for (const key of keys) {
@@ -448,20 +460,21 @@ export async function splitValidPrefix<TPayload = unknown>(
   options?: ChainVerifierOptions,
 ): Promise<SplitResult<TPayload>> {
   const verifier = createChainVerifier(options);
-  const unreadableInput = (reason: string): SplitResult<TPayload> => ({
+  // restComplete is false whenever rows might exist that could not be inspected.
+  const unreadableInput = (reason: string, restComplete: boolean): SplitResult<TPayload> => ({
     valid: [],
     rest: [],
-    restComplete: true,
+    restComplete,
     firstBreak: { index: null, reason },
   });
   let length: unknown;
   try {
-    if (!Array.isArray(entries)) return unreadableInput("entries is not an array");
+    if (!Array.isArray(entries)) return unreadableInput("entries is not an array", true);
     length = entries.length;
   } catch {
-    return unreadableInput("entries could not be read (a proxy or getter threw)");
+    return unreadableInput("entries could not be read (a proxy or getter threw)", false);
   }
-  if (!isIndex(length)) return unreadableInput("entries.length is not a non-negative integer");
+  if (!isIndex(length)) return unreadableInput("entries.length is not a non-negative integer", false);
 
   const valid: unknown[] = [];
   for (let i = 0; i < length; i++) {

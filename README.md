@@ -413,8 +413,10 @@ read once; one that throws when read (a getter, a Proxy trap) appears in `rest`
 as `{ unreadable: true, arrayIndex }` (type `UnreadableEntry`) instead of
 costing you the rows after it, and holes in a sparse array are left out. `rest`
 is in index order. If the array's keys cannot be listed (a Proxy whose `ownKeys`
-throws) the indexes are read one by one, up to 1,000,000; past that
-`restComplete` is `false` and `rest` may be shorter than the input. Recovery
+throws) the indexes are read one by one, up to 1,000,000, skipping holes; past
+that `restComplete` is `false` and `rest` may be shorter than the input.
+`restComplete` is also `false` when the array's length cannot be read or a hole
+check throws, so it is `true` only when every index was accounted for. Recovery
 from Proxies and other exotic arrays is best effort: pass plain arrays.
 
 ### Marked gaps

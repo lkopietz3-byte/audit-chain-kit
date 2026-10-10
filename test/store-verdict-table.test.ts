@@ -1458,4 +1458,45 @@ describe("verdict table: suffix recovery over Proxy arrays", () => {
     expect((await splitValidPrefix(chain)).restComplete).toBe(true);
     expect((await splitValidPrefix([null, ...chain])).restComplete).toBe(true);
   });
+
+  it("an array whose length cannot be read reports recovery as incomplete", async () => {
+    const chain = await honest(2);
+    const proxy = new Proxy([null, chain[1]], {
+      get(t, key) {
+        if (key === "length") throw new Error("length");
+        return Reflect.get(t, key) as unknown;
+      },
+    });
+    const split = await splitValidPrefix(proxy);
+    expect(split.rest).toEqual([]);
+    expect(split.restComplete).toBe(false);
+  });
+
+  it("the fallback walk skips holes rather than inventing undefined rows", async () => {
+    // eslint-disable-next-line no-sparse-arrays
+    const target: unknown[] = [null, , , "tail"];
+    const proxy = new Proxy(target, {
+      ownKeys() {
+        throw new Error("ownKeys");
+      },
+    });
+    const split = await splitValidPrefix(proxy);
+    expect(split.rest).toEqual([null, "tail"]);
+    expect(split.restComplete).toBe(true);
+  });
+
+  it("a hole check that throws keeps the row and reports recovery as incomplete", async () => {
+    const target: unknown[] = [null, "next"];
+    const proxy = new Proxy(target, {
+      ownKeys() {
+        throw new Error("ownKeys");
+      },
+      has() {
+        throw new Error("has");
+      },
+    });
+    const split = await splitValidPrefix(proxy);
+    expect(split.rest).toEqual([null, "next"]);
+    expect(split.restComplete).toBe(false);
+  });
 });

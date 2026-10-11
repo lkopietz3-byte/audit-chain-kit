@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import {
   appendEntry, appendGapToStore, appendToStore, canonicalJSON, computeEntry, createChainVerifier,
-  createMemoryAppendStore, FORMAT_VERSION, gapPayload, GENESIS_HASH, GENESIS_HEAD, sha256Hex,
+  createMemoryAppendStore, FORMAT_VERSION, gapPayload, GENESIS_HASH, GENESIS_HEAD, readStoredEntry, sha256Hex,
   splitValidPrefix, verifyChain,
 } from 'audit-chain-kit';
 import { sha256HexNodeFallback } from 'audit-chain-kit/hash-node-fallback';
@@ -137,6 +137,32 @@ await assert.rejects(appendEntry([stored[2]], { action: 'x' }), RangeError);
   const stale = await store.appendIfHead({ expectedHead: GENESIS_HEAD, entry: entry0 });
   assert.equal(stale.status, 'conflict');
   assert.equal(gapPayload({ reason: 'x', from: 1, to: 2 }).kind, 'audit-chain-kit/gap');
+}
+
+// Rows read back from a database: an exact decimal-string index is read, a Date is refused, and a
+// timestamp that was reformatted is a break that points at storage (never accepted as equal).
+{
+  const rowEntries = [];
+  let prevRow = GENESIS_HASH;
+  for (let i = 0; i < 3; i += 1) {
+    const e = await computeEntry({ prevHash: prevRow, index: i, payload: { i }, createdAt: `2026-01-01T00:00:0${i}.000Z` });
+    rowEntries.push(e);
+    prevRow = e.entryHash;
+  }
+  const asRows = rowEntries.map((e) => ({ ...e, index: String(e.index), tenant: 't1' }));
+  const rowVerifier = createChainVerifier();
+  for (const row of asRows) await rowVerifier.pushRow(row);
+  assert.equal((await rowVerifier.finish()).valid, true);
+  assert.equal(readStoredEntry({ ...asRows[0], createdAt: new Date(0) }).ok, false);
+  assert.equal(readStoredEntry({ ...asRows[0], index: '01' }).ok, false);
+  const reformatted = createChainVerifier();
+  await reformatted.pushRow({ ...asRows[0], createdAt: '2026-01-01 00:00:00+00' });
+  const refused = await reformatted.finish();
+  assert.equal(refused.valid, false);
+  assert.match(refused.reason, /storage reformatting/);
+  const anchored = createChainVerifier({ anchor: { index: 2, hash: rowEntries[2].entryHash } });
+  for (const row of asRows) await anchored.pushRow(row);
+  assert.equal((await anchored.finish()).valid, true);
 }
 
 console.log('consumer probe: audit-chain-kit and audit-chain-kit/hash-node-fallback OK');

@@ -158,6 +158,15 @@ describe("docs/CANONICAL-FORM.md section 4 example logic", () => {
     expect(entryIsIntact({ ...entry, formatVersion: undefined })).toBe(false);
   });
 
+  it("rejects an upper-cased entryHash or prevHash: hex case is part of the value", () => {
+    const { entryIsIntact } = docExample();
+    const entry = asEntry(records[1]!);
+    expect(entryIsIntact(entry)).toBe(true);
+    expect(entryIsIntact({ ...entry, entryHash: String(entry["entryHash"]).toUpperCase() })).toBe(false);
+    expect(entryIsIntact({ ...entry, prevHash: String(entry["prevHash"]).toUpperCase() })).toBe(false);
+    expect(SPEC).toMatch(/Case matters/);
+  });
+
   it("rejects the edits the package rejects: payload, index, prevHash, createdAt", () => {
     const { entryIsIntact } = docExample();
     const entry = asEntry(records[1]!);

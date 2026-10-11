@@ -57,6 +57,11 @@
   entry as appended unless the store said `appended`. The table is
   `test/store-verdict-table.test.ts`; the spec examples are
   `test/canonical-spec.test.ts`.
+- Stored rows (`src/stored.ts`, `pushRow`): a different value is never accepted as equal.
+  Only exactly-representable forms are converted (a decimal-string or bigint index that is
+  a safe integer); a `Date`, a reformatted timestamp or an upper-case hash is refused or
+  fails the hash, and the hash-mismatch reason may point at storage only when the entry
+  shows a known sign of it. Rows in `test/stored-rows.test.ts`.
 - Zero runtime dependencies. Only `src/hash-node-fallback.ts` imports a Node
   built-in, and `src/index.ts` never imports it (source-scan tests).
 

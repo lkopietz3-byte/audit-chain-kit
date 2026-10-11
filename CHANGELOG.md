@@ -42,6 +42,21 @@ format and every existing verdict are unchanged.
   `splitValidPrefix` keeps every readable row after the first break (an unreadable one
   becomes `{ unreadable: true, arrayIndex }`). `appendToStore` returns `unavailable`
   when a store's answer cannot be read, instead of rejecting.
+- **`readStoredEntry(row)` and `verifier.pushRow(row)`**: a strict reader for rows read back
+  from a database. It converts only exactly-representable forms (a plain decimal-string or
+  bigint `index` within the safe range) and refuses the rest with a reason: a `Date` or
+  number `createdAt`, upper-case hex hashes, a missing field. It never normalizes a
+  timestamp or a hash's case. A refused row is a break at its position.
+- **`createChainVerifier({ anchor })`**: the streaming verifier can now check an
+  `{ index, hash }` checkpoint, like `verifyChain`, including with `allowMarkedGaps`.
+- A hash mismatch in the streaming verifier now adds a storage hint after the usual reason when
+  the entry shows a known sign of reformatting (string `index`, non-ISO or non-string
+  `createdAt`, upper-case hash). `verifyChain` reasons are unchanged.
+- A refused gap record's message now names the record's own index and the range it declares.
+- README opening rewritten for who the kit is for and what it does not do; new
+  "Retention and pruning" section; the Postgres recipe has a tested read query and the
+  mistakes to avoid when writing an adapter. `docs/CANONICAL-FORM.md` states that hex case
+  matters and how each field must be stored to round-trip.
 - Types: `appendGapToStore` requires a store that admits `GapPayload` and returns
   `AppendOutcome<GapPayload>`; `AppendStore.appendIfHead` is declared as a function
   property so that check is strict; `splitValidPrefix` types `valid` as possibly gap

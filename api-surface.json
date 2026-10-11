@@ -13,6 +13,7 @@
     "createChainVerifier",
     "createMemoryAppendStore",
     "gapPayload",
+    "readStoredEntry",
     "sha256Hex",
     "splitValidPrefix",
     "verifyChain"

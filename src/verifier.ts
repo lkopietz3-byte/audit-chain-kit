@@ -12,6 +12,7 @@ import type { EntrySnapshot } from "./chain.js";
 import { GENESIS_HEAD, readHead } from "./compute.js";
 import type { ChainHead } from "./compute.js";
 import { readGapPayload } from "./gap.js";
+import { readStoredEntry } from "./stored.js";
 import type { GapPayload, GapRead, MarkedGap } from "./gap.js";
 import { sha256Hex } from "./hash.js";
 import { FORMAT_VERSION } from "./types.js";
@@ -35,6 +36,22 @@ export interface ChainVerifierOptions {
    * as much as you trust the rest of the log: a gap record can hide deleted rows.
    */
   readonly allowMarkedGaps?: boolean;
+  /**
+   * A checkpoint you kept outside the log's writer's control, as `{ index, hash }`
+   * (any entry's index and `entryHash`). The result is invalid unless the stream
+   * contains an accepted entry at that index with exactly that hash, which catches a
+   * fully recomputed rewrite of everything up to it and a stream that ends before
+   * it. Its index must be after `from.index`. Checked at `finish`; an earlier break
+   * is reported first. A malformed anchor, or the key present with the value
+   * `undefined`, throws a TypeError.
+   */
+  readonly anchor?: ChainHead;
+  /**
+   * Used by `pushRow`: refuse upper-case 64-digit hex hashes (default `true`; see
+   * `readStoredEntry`). Set `false` only for a custom hash function that writes
+   * upper-case digests.
+   */
+  readonly lowercaseHexHashes?: boolean;
   /** Hash function. Defaults to the Web Crypto `sha256Hex`. Must match the one used to append. */
   readonly hash?: Hasher;
   /** Must be the canonicalizer used to append. Defaults to `canonicalJSON`. */
@@ -91,6 +108,15 @@ export interface ChainVerifier {
    * @throws TypeError (synchronously) if called after `finish`
    */
   push(entry: unknown): Promise<boolean>;
+  /**
+   * Like `push`, for a row read from a database: the row is first read with
+   * `readStoredEntry` (a decimal-string `index` and extra columns are fine). A row it
+   * refuses is a break at this position, with its reason, and the row is never
+   * "fixed up" into something else.
+   *
+   * @throws TypeError (synchronously) if called after `finish`
+   */
+  pushRow(row: unknown): Promise<boolean>;
   /** Waits for queued pushes and returns the result. Calling it again returns the same result. */
   finish(): Promise<ChainVerifierResult>;
 }
@@ -98,13 +124,44 @@ export interface ChainVerifier {
 interface Snap {
   readonly entry: EntrySnapshot;
   readonly gap: GapRead;
+  /** Set when `pushRow` could not read the row as an entry. */
+  readonly rowProblem?: string;
 }
 
 interface Failure {
   readonly status: "broken" | "error";
-  readonly brokenAtIndex: number;
+  readonly brokenAtIndex: number | null;
   readonly reason: string;
   readonly error?: unknown;
+}
+
+const KIT_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const TIMESTAMP_LIKE = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/;
+const HEX_DIGEST = /^[0-9a-fA-F]{64}$/;
+
+/**
+ * A mismatch from a database round trip looks exactly like an edit. When the
+ * entry carries one of the known signs of reformatting, say so after the
+ * reason; otherwise say nothing, so a real edit is never dressed up as storage.
+ */
+function storageHint(entry: EntrySnapshot): string {
+  const signs: string[] = [];
+  const record = entry.record;
+  if (typeof record["index"] === "string") signs.push("index is a string (a bigint column read back as text); read rows with readStoredEntry");
+  const createdAt = record["createdAt"];
+  if (typeof createdAt !== "string") {
+    if (createdAt !== undefined) signs.push("createdAt is not a string (a timestamp column read back as a date); store it as text");
+  } else if (!KIT_TIMESTAMP.test(createdAt) && TIMESTAMP_LIKE.test(createdAt)) {
+    signs.push("createdAt is not in the form YYYY-MM-DDTHH:mm:ss.sssZ (a timestamp column may have reformatted the text); it must be the exact text that was hashed");
+  }
+  for (const [name, value] of [["entryHash", entry.entryHash], ["prevHash", record["prevHash"]]] as const) {
+    if (typeof value === "string" && HEX_DIGEST.test(value) && value !== value.toLowerCase()) {
+      signs.push(`${name} is upper-case hex (case is part of the hashed text)`);
+    }
+  }
+  return signs.length === 0
+    ? ""
+    : `. If this log was read back from a database, this can be storage reformatting rather than an edit: ${signs.join("; ")} (see docs/CANONICAL-FORM.md, section 5)`;
 }
 
 /**
@@ -128,22 +185,32 @@ interface Failure {
  * keep elsewhere, or you cannot see a truncated tail or a fully recomputed rewrite.
  *
  * @throws TypeError if `options` is not a plain object or undefined, has an
- *   unknown key, has `from` or `allowMarkedGaps` present but undefined or
- *   malformed, or `hash` or `canonicalize` is not a function
+ *   unknown key, has `from`, `anchor` or `allowMarkedGaps` present but undefined
+ *   or malformed, an `anchor` at or before `from`, or `hash` or `canonicalize`
+ *   is not a function
  */
 export function createChainVerifier(options?: ChainVerifierOptions): ChainVerifier {
   let fromOption: unknown;
   let gapsOption: unknown;
   let hashOption: unknown;
   let canonicalizeOption: unknown;
+  let anchorOption: unknown;
+  let lowercaseOption: unknown;
   if (options !== undefined) {
     if (!isPlainObject(options)) {
       throw new TypeError(`createChainVerifier: options must be a plain object or undefined, got ${describe(options)}`);
     }
     for (const key of Object.keys(options)) {
-      if (key !== "from" && key !== "allowMarkedGaps" && key !== "hash" && key !== "canonicalize") {
+      if (
+        key !== "from" &&
+        key !== "allowMarkedGaps" &&
+        key !== "anchor" &&
+        key !== "lowercaseHexHashes" &&
+        key !== "hash" &&
+        key !== "canonicalize"
+      ) {
         throw new TypeError(
-          `createChainVerifier: unknown option ${describe(key)}; the options are from, allowMarkedGaps, hash and canonicalize`,
+          `createChainVerifier: unknown option ${describe(key)}; the options are from, allowMarkedGaps, anchor, lowercaseHexHashes, hash and canonicalize`,
         );
       }
     }
@@ -151,6 +218,11 @@ export function createChainVerifier(options?: ChainVerifierOptions): ChainVerifi
     gapsOption = options.allowMarkedGaps;
     hashOption = options.hash;
     canonicalizeOption = options.canonicalize;
+    anchorOption = options.anchor;
+    lowercaseOption = options.lowercaseHexHashes;
+    if (anchorOption === undefined && "anchor" in options) {
+      throw new TypeError("createChainVerifier: anchor is present but undefined; leave the key out to skip the check");
+    }
     if (fromOption === undefined && "from" in options) {
       throw new TypeError("createChainVerifier: from is present but undefined; leave the key out to start from the beginning");
     }
@@ -173,6 +245,23 @@ export function createChainVerifier(options?: ChainVerifierOptions): ChainVerifi
     }
     start = parsed;
   }
+  if (lowercaseOption !== undefined && typeof lowercaseOption !== "boolean") {
+    throw new TypeError(`createChainVerifier: lowercaseHexHashes must be a boolean, got ${describe(lowercaseOption)}`);
+  }
+  let anchor: ChainHead | undefined;
+  if (anchorOption !== undefined) {
+    anchor = readHead(anchorOption);
+    if (anchor === undefined || anchor.index < 0) {
+      throw new TypeError("createChainVerifier: anchor must be { index: non-negative integer, hash: non-empty string }");
+    }
+    if (anchor.index <= start.index) {
+      throw new TypeError(
+        `createChainVerifier: anchor.index (${anchor.index}) must come after the starting head's index (${start.index}); an entry before the stream cannot be checked`,
+      );
+    }
+  }
+  const rowOptions = { lowercaseHexHashes: lowercaseOption !== false };
+  let anchorSeen: string | undefined;
   const allowGaps = gapsOption === true;
   const hash = (hashOption ?? sha256Hex) as Hasher;
   const canonicalize = (canonicalizeOption ?? canonicalJSON) as Canonicalizer;
@@ -208,6 +297,7 @@ export function createChainVerifier(options?: ChainVerifierOptions): ChainVerifi
       // Past 2^53 - 1 integers repeat (2^53 + 1 is 2^53), so the position of the next entry is not well defined.
       return broken(pos, `entry position ${describe(pos)} is past the largest safe integer (2^53 - 1), so the chain cannot continue`);
     }
+    if (snap.rowProblem !== undefined) return broken(pos, `entry ${pos} could not be read from its stored row: ${snap.rowProblem}`);
     if (entry.unusable !== undefined) {
       return broken(
         pos,
@@ -227,7 +317,10 @@ export function createChainVerifier(options?: ChainVerifierOptions): ChainVerifi
     if (entry.prevHash !== prevHash) {
       return broken(
         pos,
-        `entry ${pos} prevHash does not match the preceding entry's hash (link severed, entries reordered, or an entry was removed or inserted)`,
+        `entry ${pos} prevHash does not match the preceding entry's hash (link severed, entries reordered, or an entry was removed or inserted)` +
+          (HEX_DIGEST.test(entry.prevHash) && entry.prevHash !== entry.prevHash.toLowerCase()
+            ? ". Its prevHash is upper-case hex; if this log was read back from a database, return the lower-case text that was stored (case is part of the hashed text)"
+            : ""),
       );
     }
     const jsonProblem = entry.jsonProblem;
@@ -257,7 +350,8 @@ export function createChainVerifier(options?: ChainVerifierOptions): ChainVerifi
     if (recomputed !== entry.entryHash) {
       return broken(
         pos,
-        `entry ${pos} content does not match its entryHash (a hashed field was changed, added, or removed after appending)`,
+        `entry ${pos} content does not match its entryHash (a hashed field was changed, added, or removed after appending)` +
+          storageHint(entry),
       );
     }
 
@@ -268,13 +362,15 @@ export function createChainVerifier(options?: ChainVerifierOptions): ChainVerifi
       prevHash = entry.entryHash;
       prevIndex = pos;
       checked++;
+      if (anchor !== undefined && pos === anchor.index) anchorSeen = entry.entryHash;
       return true;
     }
 
     if (!allowGaps) {
+      const declared = gap.kind === "gap" ? ` that declares entries ${gap.from} to ${gap.to} missing` : "";
       return broken(
         pos,
-        `entry ${pos} is a gap record (it declares entries missing), but marked gaps are not accepted here (allowMarkedGaps is not true)`,
+        `entry ${pos} is a gap record at index ${describe(entry.index)}${declared}, but marked gaps are not accepted here (allowMarkedGaps is not true)`,
       );
     }
     if (gap.kind === "malformed") return broken(pos, `entry ${pos} is a malformed gap record: ${gap.why}`);
@@ -290,6 +386,7 @@ export function createChainVerifier(options?: ChainVerifierOptions): ChainVerifi
     prevHash = entry.entryHash;
     prevIndex = gap.to + 1;
     checked++;
+    if (anchor !== undefined && prevIndex === anchor.index) anchorSeen = entry.entryHash;
     return true;
   };
 
@@ -311,6 +408,21 @@ export function createChainVerifier(options?: ChainVerifierOptions): ChainVerifi
   };
 
   const build = (): ChainVerifierResult => {
+    if (failure === undefined && anchor !== undefined) {
+      if (anchorSeen === undefined) {
+        failure = {
+          status: "broken",
+          brokenAtIndex: null,
+          reason: `the stream has no entry at anchor index ${anchor.index} (it ended before it, or that position falls in a gap)`,
+        };
+      } else if (anchorSeen !== anchor.hash) {
+        failure = {
+          status: "broken",
+          brokenAtIndex: anchor.index,
+          reason: `entry ${anchor.index} entryHash does not match the anchor (entries up to ${anchor.index} were rewritten or replaced)`,
+        };
+      }
+    }
     const head: ChainHead = Object.freeze({ index: prevIndex, hash: prevHash });
     const list = Object.freeze([...gaps]);
     if (failure === undefined) {
@@ -328,13 +440,24 @@ export function createChainVerifier(options?: ChainVerifierOptions): ChainVerifi
     return failure.status === "error" ? { ...base, error: failure.error } : base;
   };
 
+  const enqueue = (snap: Snap): Promise<boolean> => {
+    const run = tail.then(() => step(snap));
+    tail = run;
+    return run;
+  };
+
   return {
     push(entry: unknown): Promise<boolean> {
       if (finished) throw new TypeError("createChainVerifier: push called after finish");
-      const snap = snapshot(entry);
-      const run = tail.then(() => step(snap));
-      tail = run;
-      return run;
+      return enqueue(snapshot(entry));
+    },
+    pushRow(row: unknown): Promise<boolean> {
+      if (finished) throw new TypeError("createChainVerifier: pushRow called after finish");
+      const read = readStoredEntry(row, rowOptions);
+      if (!read.ok) {
+        return enqueue({ entry: unusableEntry("malformed"), gap: { kind: "none" }, rowProblem: read.reason });
+      }
+      return enqueue(snapshot(read.entry));
     },
     finish(): Promise<ChainVerifierResult> {
       finished = true;

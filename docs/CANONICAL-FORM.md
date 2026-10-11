@@ -134,6 +134,25 @@ or format the timestamp one fixed way on both sides. The kit's own
 `appendEntry` writes `YYYY-MM-DDTHH:mm:ss.sssZ` (UTC, three fractional digits,
 a `Z`), and that is the recommended shape, but any non-blank string hashes.
 
+### Storing and reading the fields back
+
+A database can hand back a different text for a value that is equal to the one
+you stored, and any difference changes the hash. These round-trip exactly:
+
+| field           | store it as                          | read it back as                                    |
+| --------------- | ------------------------------------ | -------------------------------------------------- |
+| `createdAt`     | `text`, the exact string you hashed  | the same text (not `timestamptz`, not a date type) |
+| `index`         | `bigint`                             | a number; a driver that returns text gives `"7"`, which is the same integer |
+| `entryHash`, `prevHash` | `text`, lower-case hex       | the same lower-case text                           |
+| `payload`       | `jsonb` (no U+0000 in strings) or `text` holding the JSON | the same JSON value |
+
+Case matters: the digest is written as lower-case hex, and `prevHash` is hashed
+as the text it is, so `E2E9...` and `e2e9...` are different values. A decimal
+string index is the same integer as the number only if it is plain digits with
+no sign, spaces, leading zeros, fraction or exponent. The package's
+`readStoredEntry` converts exactly these forms and refuses everything else with
+a reason; it never reformats a timestamp or changes a hash's case.
+
 ## 6. Marked gap records
 
 A gap record is an ordinary entry whose payload is exactly these four fields:

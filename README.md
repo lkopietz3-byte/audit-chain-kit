@@ -2,11 +2,30 @@
 
 **[Try it in your browser →](https://lkopietz3-byte.github.io/honesty-kits/#audit-chain-kit)** · Part of [honesty kits](https://github.com/lkopietz3-byte/honesty-kits), a family of small checks for the claims an AI product makes.
 
-Build and verify SHA-256 hash chains over audit records, in TypeScript,
-with zero runtime dependencies. Each entry's hash covers its content and the
-previous entry's hash, and `verifyChain` recomputes every hash from the
-first entry. The verifier uses only Web Crypto, so someone checking a chain
-does not have to run your code or trust your server to recompute it.
+A neutral verifier and a published spec for hash-chained audit data that your
+application already writes, in TypeScript, with zero runtime dependencies.
+
+**Who it is for:** a small team with an append-mostly audit table (Postgres is
+the worked example) that wants to find accidental corruption, careless edits
+and rows deleted from the middle, and to let someone else recompute the hashes
+without running your code. The byte-level format is written down in
+[docs/CANONICAL-FORM.md](docs/CANONICAL-FORM.md) with worked examples, so a
+verifier can be written in SQL or another language; an independent Python
+version written from that page alone matched every hash in a 70,000-entry trial.
+
+**The one job:** each entry's SHA-256 covers its content and the previous
+entry's hash. `createChainVerifier` checks a log page by page from a database
+cursor in constant memory; `verifyChain` checks an array in memory;
+`computeEntry` and `appendToStore` let the database own the clock and the lock
+when you write.
+
+**What it does not do:** it shows the log is consistent with itself, nothing
+more. There is no key and no signature, so whoever controls the store can
+rewrite the whole log and it still verifies. A cut-off tail is only visible if
+you kept a head or anchor somewhere the writer cannot change. It does not say
+who wrote an entry or whether `createdAt` is true, it has no retention or
+erasure path (see [Retention and pruning](#retention-and-pruning)), and it is
+not a substitute for a signed, witnessed log such as a transparency log.
 
 MIT licensed. See [Install](#install) for supported Node versions and how to
 load it from CommonJS.
@@ -365,7 +384,7 @@ exactly as given, so store and re-read the same text. The payload rules are
 `index` that is not a non-negative safe integer throws a `TypeError`.
 Optional second argument: `{ canonicalize, hash }`.
 
-### `createChainVerifier({ from?, allowMarkedGaps?, hash?, canonicalize? })`
+### `createChainVerifier({ from?, anchor?, allowMarkedGaps?, hash?, canonicalize? })`
 
 Verifies a chain a page at a time, so you can read a table through a cursor
 without loading it. Memory stays constant however many entries you push.
@@ -374,10 +393,10 @@ without loading it. Memory stays constant however many entries you push.
 const verifier = createChainVerifier({ from: savedHead, allowMarkedGaps: false });
 let after = savedHead.index;
 for (;;) {
-  const rows = await db.rowsAfter(after, 1000);      // your query, ordered by index
+  const rows = await db.rowsAfter(after, 1000);      // see the Postgres recipe; ordered by index
   if (rows.length === 0) break;
-  for (const row of rows) await verifier.push(toEntry(row));
-  after = rows[rows.length - 1].index;
+  for (const row of rows) await verifier.pushRow(row);
+  after = Number(rows[rows.length - 1].index);
 }
 const result = await verifier.finish();
 ```
@@ -398,12 +417,44 @@ const result = await verifier.finish();
   entry. It only helps if you keep it somewhere the log's writer cannot change.
 - Positions stop at 2^53 - 1: after an entry at that index (a gap record can
   reach it), the next entry is a break, because larger integers repeat.
+- `anchor` is `{ index, hash }` of an entry you kept outside the writer's
+  control. The result is invalid unless the stream has an accepted entry at
+  that index with that hash, so a fully recomputed rewrite, or a stream that
+  ends before the anchor, fails (at the anchor's index, or with
+  `brokenAtIndex: null`). Its index must be after `from.index`. It works with
+  `allowMarkedGaps`; an anchor that falls inside a hole fails.
 - Each entry is read once, by property descriptor, when you call `push`:
   getters, `toJSON` and Proxy traps are never run for you, and an entry that is
   not exactly its JSON form is a break (the same check `verifyChain` makes).
-  Read your database rows into plain objects first, and turn a `bigint` id
-  column into a `number` (node-postgres returns it as a string, which fails
-  verification).
+- An empty stream is `valid` with `entriesChecked: 0`: nothing was checked.
+  Read `entriesChecked` (and compare `head`) before treating a result as
+  evidence that a log has content.
+- A hash mismatch from a database round trip looks the same as an edit. When
+  the entry shows a known sign of reformatting (a string `index`, a
+  `createdAt` that is not `YYYY-MM-DDTHH:mm:ss.sssZ` or not a string, an
+  upper-case hash), the reason says so after the usual text. Without such a
+  sign it says nothing extra, so a real edit is not dressed up as storage.
+
+### `readStoredEntry(row, options?)` and `verifier.pushRow(row)`
+
+Rows come back from a database in forms the hash does not tolerate. The field
+trial behind this release hit three: timestamp text rewritten by a `timestamptz`
+column, a `bigint` id returned as a string, and upper-cased hex. The rule is that
+a different value is never accepted as equal. `readStoredEntry(row)` converts
+only forms that are exactly the value that was hashed and refuses the rest:
+
+| field | accepted | refused (with a reason) |
+| --- | --- | --- |
+| `index` | a safe non-negative integer, a `bigint` in range, or a decimal string that is exactly one (`"7"`) | `"07"`, `" 7"`, `"7.0"`, `"1e1"`, `"-1"`, anything above 2^53 - 1, a fraction, `null` |
+| `createdAt` | a string, passed through untouched | a `Date`, a number, `null` (the hashed text cannot be recovered) |
+| `entryHash`, `prevHash` | a string | upper-case 64-digit hex (case is part of the hashed text); `lowercaseHexHashes: false` turns this check off |
+| `formatVersion`, `payload` | any string / any value including `null` | missing |
+
+It returns `{ ok: true, entry }` or `{ ok: false, field, reason }`, ignores
+other columns, never runs a getter, and never throws on a bad row. It does not
+parse timestamps, change a hash's case or parse JSON text. `verifier.pushRow(row)`
+does the same read and then pushes the entry; a refused row is a break at that
+position with the reason.
 
 `splitValidPrefix(entries, options?)` runs the same checks over an array and
 returns `{ valid, rest, firstBreak }`: the longest valid prefix, everything
@@ -528,11 +579,56 @@ read and the insert. This keeps the lock open while your code hashes, so keep
 that window short, and a store written this way holds the transaction between
 `readHead` and `appendIfHead`.
 
-To verify from the table, read rows `where idx > $after order by idx limit
-1000`, map each to `{ formatVersion, index: Number(idx), payload, prevHash:
-prev_hash, createdAt: created_at, entryHash: entry_hash }`, and push them as
-shown above. The hash can also be recomputed in SQL; see
+Read query for verification. Alias the columns to the entry's field names and
+select the constant version; `readStoredEntry` and `verifier.pushRow` do the
+rest. The `bigint` comes back as a number or, from node-postgres, as the string
+`"7"`; both are read exactly:
+
+```sql
+select 'audit-chain-kit/v1' as "formatVersion", idx as "index", payload,
+       prev_hash as "prevHash", created_at as "createdAt", entry_hash as "entryHash"
+from audit_log
+where idx > $1
+order by idx
+limit $2;
+```
+
+Run by hand on PostgreSQL 17: 25 entries written by `computeEntry` into this
+table read back and verified as `valid` both with `idx` as a number and with
+`idx::text`. The same entries in a table whose `created_at` was `timestamptz`
+failed at entry 0 with the createdAt hint, which is why the column above is
+`text`. The hash can also be recomputed in SQL; see
 [docs/CANONICAL-FORM.md](docs/CANONICAL-FORM.md).
+
+Three mistakes to avoid when you write the adapter:
+
+- Zero rows from the conditional insert (`INSERT 0 0`, `rowCount` 0) is
+  `conflict`, never success. A trial adapter that treated the command tag as
+  success had `appendToStore` report `appended` for 180 calls while the table held
+  50 rows, and the chain stayed valid with 130 events missing. Test your adapter:
+  after N calls that returned `appended`, the table has N more rows.
+- Return `unavailable` when you cannot tell whether the write happened.
+- Handle `conflict` from `appendToStore` (retry later, queue, or raise
+  `maxAttempts`): five immediate attempts suit low contention only. In a trial
+  with 12 writers and 2 ms latency, 62% of calls returned `conflict` at the
+  default, and a hot log should use option B above.
+
+### Retention and pruning
+
+The chain is linear: each entry points at the one before. That has consequences
+for deleting data.
+
+- **Pruning the oldest entries works.** Save `{ index, hash }` of the last entry
+  you delete somewhere safe, delete the prefix, and verify the rest with that
+  value as `from`.
+- **Deleting from the middle does not.** The first survivor after the hole breaks
+  the link. A gap record sits at `to + 1` and links to the last entry before the
+  hole, so it can describe a lost tail, not bridge a hole in the middle of a
+  log that has later entries.
+- **Redacting a payload field breaks that entry**, because the payload is hashed
+  whole. There is no erasure path in this version. If you must delete personal
+  data, keep it out of the payload (store a reference or a hash of it) and
+  delete it from the table it points to.
 
 ## Honest limits
 

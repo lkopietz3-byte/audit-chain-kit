@@ -3,11 +3,11 @@
 // TypeScript consumer would; it is type-checked, not run.
 import {
   appendEntry, appendGapToStore, appendToStore, canonicalJSON, computeEntry, createChainVerifier, FORMAT_VERSION,
-  GENESIS_HASH, GENESIS_HEAD, sha256Hex, splitValidPrefix, verifyChain,
+  GENESIS_HASH, GENESIS_HEAD, readStoredEntry, sha256Hex, splitValidPrefix, verifyChain,
 } from 'audit-chain-kit';
 import type {
   AppendOutcome, AppendStore, GapPayload, Canonicalizer, ChainAnchor, ChainEntry, ChainHead, ChainRecord,
-  ChainVerifierResult, Hasher, VerifyOptions, VerifyResult,
+  ChainVerifierResult, Hasher, StoredEntryResult, VerifyOptions, VerifyResult,
 } from 'audit-chain-kit';
 import { sha256HexNodeFallback } from 'audit-chain-kit/hash-node-fallback';
 
@@ -67,5 +67,8 @@ export async function storeProbe(store: AppendStore<AuditEvent>): Promise<ChainV
   await computeEntry({ prevHash: head.hash, index: 1, payload: {} });
   // @ts-expect-error a store typed for AuditEvent payloads cannot take gap records
   await appendGapToStore(store, { reason: 'x', count: 1 });
+  const stored: StoredEntryResult = readStoredEntry({ ...entry, index: String(entry.index) });
+  if (stored.ok) await verifier.pushRow({ ...stored.entry });
+  else void stored.reason;
   return verifier.finish();
 }

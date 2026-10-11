@@ -453,11 +453,16 @@ export function createChainVerifier(options?: ChainVerifierOptions): ChainVerifi
     },
     pushRow(row: unknown): Promise<boolean> {
       if (finished) throw new TypeError("createChainVerifier: pushRow called after finish");
-      const read = readStoredEntry(row, rowOptions);
-      if (!read.ok) {
-        return enqueue({ entry: unusableEntry("malformed"), gap: { kind: "none" }, rowProblem: read.reason });
+      // Whatever goes wrong reading the row, a break is queued: finish() can never report valid after an unreadable row.
+      let problem = "the row could not be read (a proxy or getter threw)";
+      try {
+        const read = readStoredEntry(row, rowOptions);
+        if (read.ok) return enqueue(snapshot(read.entry));
+        problem = read.reason;
+      } catch {
+        // keep the generic problem
       }
-      return enqueue(snapshot(read.entry));
+      return enqueue({ entry: unusableEntry("malformed"), gap: { kind: "none" }, rowProblem: problem });
     },
     finish(): Promise<ChainVerifierResult> {
       finished = true;
@@ -574,6 +579,11 @@ function unreadableElement(): object {
  * once. The input is not modified, and a non-array input fails closed (nothing
  * valid, no `rest`, `firstBreak.index` null).
  *
+ * With an `anchor`, a mismatch at the anchored index puts everything in `rest`
+ * (no entry up to it is vouched for) and reports the break at the anchor's index;
+ * a stream that ends before the anchored position keeps its entries in `valid`
+ * and reports `firstBreak.index` `null`.
+ *
  * @throws TypeError for bad `options`, as `createChainVerifier`
  * @throws exactly what your `hash` or `canonicalize` function threw, if one threw
  *   (the value itself, whatever its type)
@@ -625,6 +635,16 @@ export async function splitValidPrefix<TPayload = unknown>(
       firstBreak: { index: result.brokenAtIndex, reason: result.reason ?? "" },
     };
   }
-  await verifier.finish();
+  const final = await verifier.finish();
+  if (final.status === "error") throw final.error;
+  if (!final.valid) {
+    // Every entry passed on its own, so the only thing left to fail is the anchor.
+    if (final.brokenAtIndex === null) {
+      // The stream ended before the anchored position: what is there is consistent, and the log is longer than this.
+      return { valid: valid as ChainEntry<TPayload | GapPayload>[], rest: [], restComplete: true, firstBreak: { index: null, reason: final.reason ?? "" } };
+    }
+    // The entry at the anchor's index differs, so nothing up to it is vouched for: no entry is reported valid.
+    return { valid: [], rest: valid, restComplete: true, firstBreak: { index: final.brokenAtIndex, reason: final.reason ?? "" } };
+  }
   return { valid: valid as ChainEntry<TPayload | GapPayload>[], rest: [], restComplete: true, firstBreak: null };
 }

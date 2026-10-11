@@ -69,13 +69,29 @@ export function readStoredEntry(row: unknown, options?: ReadStoredEntryOptions):
     }
   }
 
-  if (!isObject(row) || Array.isArray(row)) return refuse(null, "the row is not an object");
-  let fields: Record<string, unknown>;
   try {
-    fields = ownDataFields(row);
+    return readRow(row, lowercaseHex);
   } catch {
+    // Anything the row does when inspected (a revoked Proxy, a trap that throws) is a refusal, never an exception.
     return refuse(null, "the row could not be read (a proxy or getter threw)");
   }
+}
+
+/** A Date's internal slot, checked through a captured intrinsic: throws for anything that is not a real Date. */
+// eslint-disable-next-line @typescript-eslint/unbound-method -- captured once; only ever called with .call()
+const dateTime = Date.prototype.getTime;
+function isRealDate(value: unknown): boolean {
+  try {
+    dateTime.call(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readRow(row: unknown, lowercaseHex: boolean): StoredEntryResult {
+  if (!isObject(row) || Array.isArray(row)) return refuse(null, "the row is not an object");
+  const fields = ownDataFields(row);
 
   const formatVersion = fields["formatVersion"];
   if (typeof formatVersion !== "string") {
@@ -105,7 +121,7 @@ export function readStoredEntry(row: unknown, options?: ReadStoredEntryOptions):
   if (typeof createdAt !== "string") {
     return refuse(
       "createdAt",
-      createdAt instanceof Date
+      isRealDate(createdAt)
         ? "createdAt is a Date (a timestamp column was read back as a date): the text that was hashed cannot be recovered; store createdAt as text and select that column"
         : `createdAt must be the text that was hashed, got ${describe(createdAt)}; store createdAt as text`,
     );

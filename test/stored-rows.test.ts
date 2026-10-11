@@ -10,6 +10,7 @@ import {
   GENESIS_HASH,
   readStoredEntry,
   sha256Hex,
+  splitValidPrefix,
 } from "../src/index.js";
 import type { ChainEntry, ChainVerifierOptions, ChainVerifierResult } from "../src/index.js";
 
@@ -360,5 +361,78 @@ describe("storage round trip through JSON text (what node-postgres returns for j
     const first = readStoredEntry(stored[3]);
     expect(first.ok && canonicalJSON(first.entry)).toBe(canonicalJSON(chain[3]));
     expect(FORMAT_VERSION).toBe("audit-chain-kit/v1");
+  });
+});
+
+describe("splitValidPrefix honors the anchor option", () => {
+  const anchorOf = (e: ChainEntry) => ({ index: e.index, hash: e.entryHash });
+
+  it("a matching anchor leaves everything valid", async () => {
+    const chain = await honest(12);
+    const split = await splitValidPrefix(chain, { anchor: anchorOf(chain[7]!) });
+    expect(split.valid).toEqual(chain);
+    expect(split.firstBreak).toBeNull();
+  });
+
+  it("a recomputed rewrite fails the anchor: break at the anchor index and nothing is vouched for", async () => {
+    const chain = await honest(12);
+    let prev = GENESIS_HASH;
+    const rewritten: ChainEntry[] = [];
+    for (let i = 0; i < 12; i++) {
+      const e = await computeEntry({ prevHash: prev, index: i, payload: { n: i === 2 ? "edited" : i }, createdAt: at(i) });
+      rewritten.push(e);
+      prev = e.entryHash;
+    }
+    const split = await splitValidPrefix(rewritten, { anchor: anchorOf(chain[7]!) });
+    expect(split.firstBreak).toMatchObject({ index: 7 });
+    expect(split.firstBreak!.reason).toMatch(/anchor/);
+    expect(split.valid).toEqual([]);
+    expect(split.rest).toEqual(rewritten);
+    expect(split.restComplete).toBe(true);
+  });
+
+  it("a stream that ends before the anchor reports it with index null and keeps the consistent entries", async () => {
+    const chain = await honest(12);
+    const split = await splitValidPrefix(chain.slice(0, 5), { anchor: anchorOf(chain[9]!) });
+    expect(split.firstBreak).toMatchObject({ index: null });
+    expect(split.firstBreak!.reason).toMatch(/no entry at anchor index 9/);
+    expect(split.valid).toEqual(chain.slice(0, 5));
+    expect(split.rest).toEqual([]);
+  });
+});
+
+describe("rows that cannot even be inspected are refused, never thrown, and never leave the stream valid", () => {
+  const revoked = (): object => {
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+    return proxy;
+  };
+
+  it("a revoked Proxy row, a Proxy with throwing traps, and a Proxy createdAt are refused", async () => {
+    const [entry] = await honest(1);
+    const trapped = new Proxy({}, { getPrototypeOf() { throw new Error("proto"); }, ownKeys() { throw new Error("keys"); } });
+    const badCreatedAt = new Proxy({}, { getPrototypeOf() { throw new Error("proto"); } });
+    for (const row of [revoked(), trapped, rowOf(entry!, { createdAt: badCreatedAt }), rowOf(entry!, { createdAt: revoked() })]) {
+      expect(readStoredEntry(row)).toMatchObject({ ok: false });
+    }
+  });
+
+  it("pushRow of such a row is false and finish is never valid", async () => {
+    const [entry] = await honest(1);
+    const badCreatedAt = new Proxy({}, { getPrototypeOf() { throw new Error("proto"); } });
+    for (const row of [revoked(), rowOf(entry!, { createdAt: badCreatedAt })]) {
+      const verifier = createChainVerifier();
+      expect(await verifier.pushRow(row)).toBe(false);
+      expect(await verifier.finish()).toMatchObject({ valid: false, status: "broken", brokenAtIndex: 0 });
+    }
+  });
+
+  it("an unreadable row between good rows breaks the stream at its position", async () => {
+    const chain = await honest(4);
+    const verifier = createChainVerifier();
+    await verifier.pushRow(rowOf(chain[0]!));
+    await verifier.pushRow(revoked());
+    await verifier.pushRow(rowOf(chain[2]!));
+    expect(await verifier.finish()).toMatchObject({ valid: false, brokenAtIndex: 1, entriesChecked: 1 });
   });
 });

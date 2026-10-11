@@ -52,6 +52,10 @@ format and every existing verdict are unchanged.
 - A hash mismatch in the streaming verifier now adds a storage hint after the usual reason when
   the entry shows a known sign of reformatting (string `index`, non-ISO or non-string
   `createdAt`, upper-case hash). `verifyChain` reasons are unchanged.
+- `splitValidPrefix` honors `anchor`: a mismatch at the anchored index reports the break there
+  and vouches for no entry; a stream that ends before the anchor keeps its entries and reports
+  `firstBreak.index` `null`. `readStoredEntry` and `pushRow` treat any row that cannot be
+  inspected (a revoked or trapping Proxy) as a refusal, and `finish()` is never valid after one.
 - A refused gap record's message now names the record's own index and the range it declares.
 - README opening rewritten for who the kit is for and what it does not do; new
   "Retention and pruning" section; the Postgres recipe has a tested read query and the

@@ -108,6 +108,13 @@ Breaking changes, Changed and Fixed.
 
 ### Fixed
 
+- **`splitValidPrefix` kept a rewritten entry as valid when a later entry also broke.**
+  With an `anchor`, a mismatch at the anchored index now puts everything in `rest` and is
+  reported as the first break, even when a malformed entry follows. The streaming
+  verifier reports the same earlier break.
+- **An entry with a getter or `toJSON` method was serialized (running it) before being
+  rejected.** With the default canonicalizer, `verifyChain` and the streaming verifier
+  now reject it as `valid: false` without calling it.
 - **`anchor: undefined` and `expectedMinLength: undefined` silently skipped their
   check.** A key that is present with the value `undefined` (for example, an
   anchor lookup that found nothing) switched the check off, so a rewritten or

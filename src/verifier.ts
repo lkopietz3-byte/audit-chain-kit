@@ -13,6 +13,7 @@ import { GENESIS_HEAD, readHead } from "./compute.js";
 import type { ChainHead } from "./compute.js";
 import { readGapPayload } from "./gap.js";
 import { readStoredEntry } from "./stored.js";
+import { mayRunCode } from "./json-data.js";
 import type { GapPayload, GapRead, MarkedGap } from "./gap.js";
 import { sha256Hex } from "./hash.js";
 import { FORMAT_VERSION } from "./types.js";
@@ -120,6 +121,9 @@ export interface ChainVerifier {
   /** Waits for queued pushes and returns the result. Calling it again returns the same result. */
   finish(): Promise<ChainVerifierResult>;
 }
+
+/** Results whose break is a mismatch at the anchored index (so nothing up to it is vouched for). */
+const anchorRejected = new WeakSet<object>();
 
 interface Snap {
   readonly entry: EntrySnapshot;
@@ -262,6 +266,7 @@ export function createChainVerifier(options?: ChainVerifierOptions): ChainVerifi
   }
   const rowOptions = { lowercaseHexHashes: lowercaseOption !== false };
   let anchorSeen: string | undefined;
+  let anchorMismatch = false;
   const allowGaps = gapsOption === true;
   const hash = (hashOption ?? sha256Hex) as Hasher;
   const canonicalize = (canonicalizeOption ?? canonicalJSON) as Canonicalizer;
@@ -325,6 +330,9 @@ export function createChainVerifier(options?: ChainVerifierOptions): ChainVerifi
     }
     const jsonProblem = entry.jsonProblem;
     if (jsonProblem !== undefined && jsonProblem.kind !== "lossy") return broken(pos, notJsonReason(pos, jsonProblem));
+
+    // An entry with a getter or toJSON hook is rejected without serializing it: serializing would run the hook.
+    if (checkJson && jsonProblem !== undefined && mayRunCode(entry.record)) return broken(pos, notJsonReason(pos, jsonProblem));
 
     let canonical: unknown;
     try {
@@ -408,6 +416,23 @@ export function createChainVerifier(options?: ChainVerifierOptions): ChainVerifi
   };
 
   const build = (): ChainVerifierResult => {
+    // A break after an already-seen anchored entry that did not match: the earlier break is the first one,
+    // and nothing up to the anchor is vouched for, so report it instead of the later one.
+    if (
+      failure !== undefined &&
+      failure.status === "broken" &&
+      anchor !== undefined &&
+      anchorSeen !== undefined &&
+      anchorSeen !== anchor.hash &&
+      (failure.brokenAtIndex === null || failure.brokenAtIndex > anchor.index)
+    ) {
+      failure = {
+        status: "broken",
+        brokenAtIndex: anchor.index,
+        reason: `entry ${anchor.index} entryHash does not match the anchor (entries up to ${anchor.index} were rewritten or replaced)`,
+      };
+      anchorMismatch = true;
+    }
     if (failure === undefined && anchor !== undefined) {
       if (anchorSeen === undefined) {
         failure = {
@@ -421,6 +446,7 @@ export function createChainVerifier(options?: ChainVerifierOptions): ChainVerifi
           brokenAtIndex: anchor.index,
           reason: `entry ${anchor.index} entryHash does not match the anchor (entries up to ${anchor.index} were rewritten or replaced)`,
         };
+        anchorMismatch = true;
       }
     }
     const head: ChainHead = Object.freeze({ index: prevIndex, hash: prevHash });
@@ -437,7 +463,9 @@ export function createChainVerifier(options?: ChainVerifierOptions): ChainVerifi
       head,
       gaps: list,
     } as const;
-    return failure.status === "error" ? { ...base, error: failure.error } : base;
+    const result: ChainVerifierResult = failure.status === "error" ? { ...base, error: failure.error } : base;
+    if (anchorMismatch) anchorRejected.add(result);
+    return result;
   };
 
   const enqueue = (snap: Snap): Promise<boolean> => {
@@ -628,6 +656,10 @@ export async function splitValidPrefix<TPayload = unknown>(
     }
     const rest: unknown[] = [item === unreadableElement() ? unreadableEntry(i) : item];
     const complete = collectRest(entries, i, length, rest);
+    if (anchorRejected.has(result)) {
+      // The anchored entry did not match and a later entry also broke: nothing up to the anchor is vouched for.
+      return { valid: [], rest: [...valid, ...rest], restComplete: complete, firstBreak: { index: result.brokenAtIndex, reason: result.reason ?? "" } };
+    }
     return {
       valid: valid as ChainEntry<TPayload | GapPayload>[],
       rest,

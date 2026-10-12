@@ -54,6 +54,37 @@ export function findJsonProblem(value: unknown, options: { rootMayBeInstance?: b
 }
 
 /**
+ * True if serializing `value` could run caller code: an accessor property, a
+ * `toJSON` method (own or on a prototype chain), or an object whose properties cannot be read
+ * as descriptors (a Proxy trap threw). Reads descriptors only, so it runs none
+ * itself (a Proxy trap can still run, as in {@link findJsonProblem}). Used to
+ * reject such an entry without serializing it.
+ */
+export function mayRunCode(value: unknown): boolean {
+  return scanForCode(value, new Set<object>(), 0);
+}
+
+function scanForCode(value: unknown, seen: Set<object>, depth: number): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  if (seen.has(value) || depth > MAX_NESTING_DEPTH) return false;
+  seen.add(value);
+  try {
+    if (inheritsToJSON(value)) return true;
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key === "symbol") continue;
+      const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined) continue;
+      if ("get" in descriptor || "set" in descriptor) return true;
+      if (key === "toJSON" && typeof descriptor.value === "function") return true;
+      if (scanForCode(descriptor.value, seen, depth + 1)) return true;
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * `path` is one shared stack that callers push to and pop from, so a million
  * array elements do not allocate a million paths. A problem takes a copy.
  */

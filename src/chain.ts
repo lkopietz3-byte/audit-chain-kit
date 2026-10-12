@@ -1,6 +1,6 @@
 import { canonicalJSON, MAX_NESTING_DEPTH, NestingDepthError } from "./canonicalize.js";
 import { sha256Hex } from "./hash.js";
-import { findJsonProblem } from "./json-data.js";
+import { findJsonProblem, mayRunCode } from "./json-data.js";
 import type { JsonProblem } from "./json-data.js";
 import { FORMAT_VERSION, GENESIS_HASH } from "./types.js";
 import type { Canonicalizer, ChainAnchor, ChainEntry, Hasher, VerifyOptions, VerifyResult } from "./types.js";
@@ -290,6 +290,11 @@ export async function verifyChain<TPayload = unknown>(
     // index checks, so a tampered entry still gets the more specific reason.
     const jsonProblem = entry.jsonProblem;
     if (jsonProblem !== undefined && jsonProblem.kind !== "lossy") {
+      return invalid(i, notJsonReason(i, jsonProblem));
+    }
+
+    // An entry with a getter or toJSON hook is rejected without serializing it: serializing would run the hook.
+    if (checkJson && jsonProblem !== undefined && mayRunCode(entry.record)) {
       return invalid(i, notJsonReason(i, jsonProblem));
     }
 

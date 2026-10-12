@@ -54,7 +54,9 @@
   as a chain break. A gap record is accepted only with `allowMarkedGaps: true` and an
   exact range; an index jump otherwise is a break. `appendToStore` returns
   `unavailable` for any store failure or unrecognized answer and never reports an
-  entry as appended unless the store said `appended`. The table is
+  entry as appended unless the store said `appended`. With an `anchor`, the
+  streaming verifier and `splitValidPrefix` treat a mismatch at the anchored index as a
+  break that vouches for no entry up to it. The table is
   `test/store-verdict-table.test.ts`; the spec examples are
   `test/canonical-spec.test.ts`.
 - Stored rows (`src/stored.ts`, `pushRow`): a different value is never accepted as equal.
@@ -106,13 +108,15 @@ the same commit with a CHANGELOG entry.
 Run by hand, not in CI: `npm i -D --no-save @stryker-mutator/core
 @stryker-mutator/vitest-runner @vitest/coverage-v8@4.1.11`, then `npx stryker run`
 with an uncommitted `stryker.config.json` (`testRunner: "vitest"`,
-`mutate: ["src/**/*.ts"]`). The 0.2.0 run scored 99.27% (407 of 410 mutants
-killed or timed out; it was 88.85% at 0.1.1). The 3 survivors are equivalent:
+`mutate: ["src/**/*.ts"]`). The last run was at 0.2.0 and scored 99.27% (407 of
+410 mutants killed or timed out; it was 88.85% at 0.1.1), with v8 coverage at
+100% of statements, branches, functions and lines. Both numbers predate the
+store-backed API, the stored-row reader and the faithfulness check of 0.3.0, and
+have not been re-measured for it. The 3 survivors at 0.2.0 were equivalent:
 `length < minLength` with `minLength` undefined (`length < undefined` is
 already false), `code > 0xffff` vs `>=` in the escaper (U+FFFF is never
 escaped), and the `"utf8"` argument to `createHash().update` (it is the
-default encoding). v8 coverage is 100% of statements, branches, functions and
-lines.
+default encoding).
 
 ## Are the types wrong? (attw)
 
@@ -121,7 +125,7 @@ CI runs [`arethetypeswrong`](https://github.com/arethetypeswrong/arethetypeswron
 against the packed tarball after the build step, and the release workflow runs
 it before publishing. The `cjs-resolves-to-esm` rule is ignored on
 purpose: this is an ESM-only package (`"type": "module"`, no `require` entry point), so a
-CommonJS consumer must use Node's `require(esm)` support (Node >=20.19 or >=22.12 — see
+CommonJS consumer must use Node's `require(esm)` support (Node >=20.19 or >=22.12; see
 "Runtime support policy" below) rather than a native `require`. A dual CJS+ESM build was
 rejected to avoid the dual-package hazard (two separately-identified copies of the same module,
 with broken `instanceof` checks and duplicated module state across the CJS and ESM entry
@@ -156,7 +160,7 @@ versions by their exact bytes, so avoid unpublishing even where the policy would
 ### Runtime support policy
 
 - **Supported (recommended for production):** Node 22 and 24 LTS; Node 26 current.
-- **Compatibility-tested:** Node 20. Node 20 is end-of-life — nodejs.org's release page
+- **Compatibility-tested:** Node 20. Node 20 is end-of-life: nodejs.org's release page
   (<https://nodejs.org/en/about/previous-releases>) lists it as `EOL`, with its final release
   dated Mar 24, 2026. The `compat` job in `verify.yml` still runs the tests and
   `scripts/verify-package.mjs` (which includes the CommonJS `require()` probe) on Node 20.19.0

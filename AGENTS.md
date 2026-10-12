@@ -1,4 +1,4 @@
-# audit-chain-kit — agent instructions
+# audit-chain-kit: agent instructions
 
 Build and verify SHA-256 hash chains over audit records, with a zero-dependency Web Crypto verifier and optional anchor checks.
 

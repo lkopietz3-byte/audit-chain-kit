@@ -76,8 +76,9 @@ npm install audit-chain-kit
 ```
 
 Or build from source: clone the repository and run
-`npm install && npm run build`. The behavior described below is version 0.2.1;
-[CHANGELOG.md](CHANGELOG.md) lists what changed from 0.1.1.
+`npm install && npm run build`. The behavior described below is version 0.3.0;
+[CHANGELOG.md](CHANGELOG.md) lists what changed, with a migration note for each
+breaking change from 0.2.1.
 
 This is an ESM package (`"type": "module"`). ESM and CommonJS consumers work
 like this:
@@ -354,9 +355,12 @@ console.log((await verifyChain(chain, undefined, { hash: sha256HexNodeFallback }
 (`{ index, entryHash }`), `Canonicalizer` (`(value: unknown) => string`),
 `Hasher` (`(input: string) => Promise<string>`), `VerifyOptions` and
 `VerifyResult` (`valid`, `brokenAtIndex`, `reason`, `entriesChecked`). For the
-store-backed API: `ChainHead`, `ComputeEntryInput`, `ChainVerifier`,
-`ChainVerifierOptions`, `ChainVerifierResult`, `MarkedGap`, `SplitResult`,
-`AppendStore`, `StoreHeadResult`, `StoreAppendResult`, `AppendOutcome`.
+store-backed API: `ChainHead`, `ComputeEntryInput`, `ComputeEntryOptions`,
+`ChainVerifier`, `ChainVerifierOptions`, `ChainVerifierResult`, `GapPayload`,
+`MarkedGap`, `SplitResult`, `UnreadableEntry`, `ReadStoredEntryOptions`,
+`StoredEntryResult`, `AppendStore`, `AppendToStoreOptions`, `MemoryAppendStore`,
+`StoreHeadResult`, `StoreAppendResult`, `AppendOutcome`. Also exported:
+`GENESIS_HEAD`, `MARKED_GAP_KIND` and `MAX_GAP_REASON_LENGTH`.
 
 ## Store-backed appends and streaming verification
 
@@ -384,7 +388,7 @@ exactly as given, so store and re-read the same text. The payload rules are
 `index` that is not a non-negative safe integer throws a `TypeError`.
 Optional second argument: `{ canonicalize, hash }`.
 
-### `createChainVerifier({ from?, anchor?, allowMarkedGaps?, hash?, canonicalize? })`
+### `createChainVerifier({ from?, anchor?, allowMarkedGaps?, lowercaseHexHashes?, hash?, canonicalize? })`
 
 Verifies a chain a page at a time, so you can read a table through a cursor
 without loading it. Memory stays constant however many entries you push.
@@ -423,6 +427,9 @@ const result = await verifier.finish();
   ends before the anchor, fails (at the anchor's index, or with
   `brokenAtIndex: null`). Its index must be after `from.index`. It works with
   `allowMarkedGaps`; an anchor that falls inside a hole fails.
+- `lowercaseHexHashes` (default `true`) only affects `pushRow`; see
+  `readStoredEntry` below. `hash` and `canonicalize` must be the ones used to
+  append, as for `verifyChain`.
 - Each entry is read once, by property descriptor, when you call `push`:
   getters, `toJSON` and Proxy traps are never run for you, and an entry that is
   not exactly its JSON form is a break (the same check `verifyChain` makes).
@@ -437,10 +444,10 @@ const result = await verifier.finish();
 
 ### `readStoredEntry(row, options?)` and `verifier.pushRow(row)`
 
-Rows come back from a database in forms the hash does not tolerate. The field
-trial behind this release hit three: timestamp text rewritten by a `timestamptz`
+Rows come back from a database in forms the hash does not tolerate. A trial
+against Postgres hit three: timestamp text rewritten by a `timestamptz`
 column, a `bigint` id returned as a string, and upper-cased hex. The rule is that
-a different value is never accepted as equal. `readStoredEntry(row)` converts
+a different value is never accepted as equal. `readStoredEntry(row, options?)` converts
 only forms that are exactly the value that was hashed and refuses the rest:
 
 | field | accepted | refused (with a reason) |
@@ -450,7 +457,7 @@ only forms that are exactly the value that was hashed and refuses the rest:
 | `entryHash`, `prevHash` | a string | upper-case 64-digit hex (case is part of the hashed text); `lowercaseHexHashes: false` turns this check off |
 | `formatVersion`, `payload` | any string / any value including `null` | missing |
 
-It returns `{ ok: true, entry }` or `{ ok: false, field, reason }`, ignores
+Its one option is `lowercaseHexHashes` (default `true`). It returns `{ ok: true, entry }` or `{ ok: false, field, reason }`, ignores
 other columns, never runs a getter, and never throws on a bad row. It does not
 parse timestamps, change a hash's case or parse JSON text. `verifier.pushRow(row)`
 does the same read and then pushes the entry; a refused row is a break at that
@@ -474,7 +481,8 @@ from Proxies and other exotic arrays is best effort: pass plain arrays.
 
 A gap record is an ordinary entry that says "positions `from` to `to` hold no
 entries", for a restore or outage that lost rows you cannot recover. Build the
-payload with `gapPayload({ reason, from, to })` and give the entry
+payload with `gapPayload({ reason, from, to })` (`reason` is non-blank text of at
+most `MAX_GAP_REASON_LENGTH`, 500, characters) and give the entry
 `index = to + 1` (or call `appendGapToStore(store, { reason, count })`, which
 computes both; the store must be typed `AppendStore<YourPayload | GapPayload>`
 and the outcome's entry is typed `GapPayload`). Its payload is exactly
@@ -512,7 +520,8 @@ returns `conflict` and writes nothing.
 
 `appendToStore` reads the head and clock, computes the entry, calls
 `appendIfHead`, and on `conflict` re-reads and tries again, up to
-`maxAttempts` (default 5, at most 100). It returns
+`maxAttempts` (default 5, at most 100). The options also take `canonicalize` and
+`hash`, which must match what the verifier uses. It returns
 `{ status: "appended", entry, attempts }`, `{ status: "conflict", attempts }`
 once the attempts are used up, or `{ status: "unavailable", attempts, reason }`.
 It fails closed: a store that returns `unavailable`, throws, rejects or answers
@@ -523,8 +532,8 @@ throws) counts as `unavailable` too, on the head read and after the write. A pay
 `appendEntry`. The name differs from `appendEntry` because that one stays as it
 is.
 
-`createMemoryAppendStore({ now })` is an in-memory store for tests and
-examples. It is not durable and is not a model of a real database's failure
+`createMemoryAppendStore({ now, entries? })` is an in-memory store for tests and
+examples; `store.entries()` returns a copy of what it holds. It is not durable and is not a model of a real database's failure
 modes; there is no conformance suite in this package.
 
 ### Postgres recipe

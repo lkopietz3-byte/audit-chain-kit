@@ -6,15 +6,46 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-The record format (`audit-chain-kit/v1`), `canonicalJSON` output and every golden
-vector are unchanged, so chains written by earlier versions still verify when read
-back from JSON. Some in-memory input that was accepted before is now refused (see
-Changed).
+## [0.3.0] - unreleased
+
+Minor bump. The record format (`audit-chain-kit/v1`), `canonicalJSON` output and every
+golden vector are unchanged, so chains written by earlier versions still verify when
+read back from JSON. Some in-memory input that was accepted before is now refused or
+reported invalid, and a few calls that returned a result now throw.
+
+### Breaking changes
+
+Each item gives the call that changes and what to do about it.
+
+- **`appendEntry` throws a `TypeError` for a payload that JSON would change** (default
+  canonicalizer only). Before, a `Date`, `undefined` field, `NaN`, `Infinity`, `Map`,
+  `Set` or class instance was converted silently. Migration: convert first
+  (`date.toISOString()`, `null`, plain objects) or drop the field. Stored JSON text is
+  unaffected.
+- **`verifyChain` reports an in-memory entry as `valid: false` when it is not plain JSON
+  data** (same rule, applied to the whole entry; a cycle or BigInt now gives
+  `valid: false` instead of a thrown `TypeError`). Migration: verify the JSON you
+  stored (`JSON.parse` output always passes), or fix the entry. A stored `1e999`
+  (parses to `Infinity`) is now invalid, not read as `null`.
+- **`anchor` and `expectedMinLength` present with the value `undefined` throw a
+  `TypeError`.** Before, they silently skipped the check. Migration: leave the key out
+  when there is nothing to check.
+- **`VerifyResult` has a new field, `entriesChecked`.** Code that compares a whole
+  result with strict deep equality needs the new key. An empty chain is still
+  `valid: true`, now with `entriesChecked: 0`.
+- **Entries nested deeper than 256 levels** give `valid: false` from `verifyChain`, a
+  `TypeError` from `appendEntry` and a `RangeError` that names the limit from
+  `canonicalJSON`, where the engine's stack-overflow `RangeError` came before.
+  Migration: flatten the payload.
+- **`verifyChain` returns `valid: false` instead of throwing** for malformed data the
+  default canonicalizer cannot serialize, and for an unreadable entry (revoked proxy,
+  throwing getter). Code that relied on catching those errors should read the result.
 
 ### Added
 
-Store-backed append and streaming verification. Existing functions, the record
-format and every existing verdict are unchanged.
+Store-backed append and streaming verification. These additions do not change an
+existing function's signature or the record format; the verdict changes are under
+Breaking changes, Changed and Fixed.
 
 - **`computeEntry({ prevHash, index, payload, createdAt })`** returns an entry with
   its hash, using the same canonical form as `appendEntry`. `createdAt` is a string
@@ -270,7 +301,7 @@ every golden vector are unchanged, so existing chains still verify.
   on Node 26.3.0, and guarded in CI on Node 20, 22, and 24 by an extended
   `scripts/verify-package.mjs`.
 - README: a "Relationship to sibling kits" section linking to
-  [agent-receipt-kit](https://github.com/lkopietz3-byte/agent-receipt-kit) —
+  [agent-receipt-kit](https://github.com/lkopietz3-byte/agent-receipt-kit):
   a receipt-verification result can be appended to a chain built with this
   package for a tamper-evident record of what an agent claimed and when.
 

@@ -43,7 +43,8 @@ async function chainOf(count: number, tag = "n"): Promise<Mutable[]> {
   return chain.map((e) => ({ ...e }));
 }
 
-const VALID = { valid: true, brokenAtIndex: null, reason: null };
+// entriesChecked varies by test; verdict-table.test.ts pins the exact counts.
+const VALID = { valid: true, brokenAtIndex: null, reason: null, entriesChecked: expect.any(Number) as number };
 
 describe("verifyChain snapshot: anchor comparison uses the hash that was verified (ACK-001 / REG-04)", () => {
   it("rejects when an entryHash is swapped to the anchored value while its own hash is pending", async () => {

@@ -31,7 +31,8 @@ async function forgeEntry(record: {
   return { ...full, entryHash: await sha256Hex(canonicalJSON(full)) } as unknown as ChainEntry<Note>;
 }
 
-const VALID = { valid: true, brokenAtIndex: null, reason: null };
+// entriesChecked varies by test; verdict-table.test.ts pins the exact counts.
+const VALID = { valid: true, brokenAtIndex: null, reason: null, entriesChecked: expect.any(Number) as number };
 
 describe("verifyChain: malformed input fails closed", () => {
   it.each([

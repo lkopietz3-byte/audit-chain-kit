@@ -4,6 +4,198 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.3.0] - unreleased
+
+Minor bump. The record format (`audit-chain-kit/v1`), `canonicalJSON` output and every
+golden vector are unchanged, so chains written by earlier versions still verify when
+read back from JSON. Some in-memory input that was accepted before is now refused or
+reported invalid, and a few calls that returned a result now throw.
+
+### Breaking changes
+
+Each item gives the call that changes and what to do about it.
+
+- **`appendEntry` throws a `TypeError` for a payload that JSON would change** (default
+  canonicalizer only). Before, a `Date`, `undefined` field, `NaN`, `Infinity`, `Map`,
+  `Set` or class instance was converted silently. Migration: convert first
+  (`date.toISOString()`, `null`, plain objects) or drop the field. Stored JSON text is
+  unaffected.
+- **`verifyChain` reports an in-memory entry as `valid: false` when it is not plain JSON
+  data** (same rule, applied to the whole entry; a cycle or BigInt now gives
+  `valid: false` instead of a thrown `TypeError`). Migration: verify the JSON you
+  stored (`JSON.parse` output always passes), or fix the entry. A stored `1e999`
+  (parses to `Infinity`) is now invalid, not read as `null`.
+- **`anchor` and `expectedMinLength` present with the value `undefined` throw a
+  `TypeError`.** Before, they silently skipped the check. Migration: leave the key out
+  when there is nothing to check.
+- **`VerifyResult` has a new field, `entriesChecked`.** Code that compares a whole
+  result with strict deep equality needs the new key. An empty chain is still
+  `valid: true`, now with `entriesChecked: 0`.
+- **Entries nested deeper than 256 levels** give `valid: false` from `verifyChain`, a
+  `TypeError` from `appendEntry` and a `RangeError` that names the limit from
+  `canonicalJSON`, where the engine's stack-overflow `RangeError` came before.
+  Migration: flatten the payload.
+- **`verifyChain` returns `valid: false` instead of throwing** for malformed data the
+  default canonicalizer cannot serialize, and for an unreadable entry (revoked proxy,
+  throwing getter). Code that relied on catching those errors should read the result.
+
+### Added
+
+Store-backed append and streaming verification. These additions do not change an
+existing function's signature or the record format; the verdict changes are under
+Breaking changes, Changed and Fixed.
+
+- **`computeEntry({ prevHash, index, payload, createdAt })`** returns an entry with
+  its hash, using the same canonical form as `appendEntry`. `createdAt` is a string
+  the caller supplies (a store's clock); it is required and never defaults to the
+  local clock.
+- **`createChainVerifier({ from?, allowMarkedGaps?, hash?, canonicalize? })`**, a
+  streaming verifier with `push(entry)` and `finish()`, so a log can be checked
+  page by page from a database cursor in constant memory. It reports the first break
+  with its position and reason, a `head` to resume from or compare with a stored
+  head, and every accepted marked gap. A throwing `hash` or `canonicalize` gives
+  `status: "error"`, not a false verdict.
+- **`splitValidPrefix(entries, options?)`** returns `{ valid, rest, firstBreak }` for
+  repair tooling.
+- **Marked gaps**: `gapPayload({ reason, from, to })`, `MARKED_GAP_KIND` and
+  `appendGapToStore`. A gap record declares positions `from` to `to` empty and sits at
+  index `to + 1`. It is accepted only with `allowMarkedGaps: true`, only when its range
+  is exact, and is always listed in the result. An index jump without one is a break.
+- **`AppendStore`** (`readHead`, `appendIfHead`), **`appendToStore`** (bounded retry on
+  conflict, fails closed when the store is unavailable, throws or answers oddly) and
+  **`createMemoryAppendStore`** (in-memory, for tests only). `GENESIS_HEAD` is the head
+  of an empty chain.
+- The streaming verifier treats a position past 2^53 - 1 as a break (repeated
+  indexes after a maximal gap record could otherwise verify), reports a nesting-depth
+  failure inside a custom `canonicalize` as `status: "error"` rather than a break, and
+  `splitValidPrefix` keeps every readable row after the first break (an unreadable one
+  becomes `{ unreadable: true, arrayIndex }`). `appendToStore` returns `unavailable`
+  when a store's answer cannot be read, instead of rejecting.
+- **`readStoredEntry(row)` and `verifier.pushRow(row)`**: a strict reader for rows read back
+  from a database. It converts only exactly-representable forms (a plain decimal-string or
+  bigint `index` within the safe range) and refuses the rest with a reason: a `Date` or
+  number `createdAt`, upper-case hex hashes, a missing field. It never normalizes a
+  timestamp or a hash's case. A refused row is a break at its position.
+- **`createChainVerifier({ anchor })`**: the streaming verifier can now check an
+  `{ index, hash }` checkpoint, like `verifyChain`, including with `allowMarkedGaps`.
+- A hash mismatch in the streaming verifier now adds a storage hint after the usual reason when
+  the entry shows a known sign of reformatting (string `index`, non-ISO or non-string
+  `createdAt`, upper-case hash). `verifyChain` reasons are unchanged.
+- `splitValidPrefix` honors `anchor`: a mismatch at the anchored index reports the break there
+  and vouches for no entry; a stream that ends before the anchor keeps its entries and reports
+  `firstBreak.index` `null`. `readStoredEntry` and `pushRow` treat any row that cannot be
+  inspected (a revoked or trapping Proxy) as a refusal, and `finish()` is never valid after one.
+- A refused gap record's message now names the record's own index and the range it declares.
+- README opening rewritten for who the kit is for and what it does not do; new
+  "Retention and pruning" section; the Postgres recipe has a tested read query and the
+  mistakes to avoid when writing an adapter. `docs/CANONICAL-FORM.md` states that hex case
+  matters and how each field must be stored to round-trip.
+- Types: `appendGapToStore` requires a store that admits `GapPayload` and returns
+  `AppendOutcome<GapPayload>`; `AppendStore.appendIfHead` is declared as a function
+  property so that check is strict; `splitValidPrefix` types `valid` as possibly gap
+  records. `splitValidPrefix` includes non-enumerable index elements in `rest` and
+  rethrows exactly what a custom `hash` or `canonicalize` threw.
+- `docs/CANONICAL-FORM.md` section 4 now hashes the entry minus `entryHash` and
+  checks the format version, like the package, and a test runs that example against
+  tampering. `splitValidPrefix` returns `rest` in index order, reads indexes one by
+  one when a Proxy's `ownKeys` throws, and sets `restComplete: false` when `rest` may
+  be shorter than the input.
+- **`docs/CANONICAL-FORM.md`**, the byte-level canonical form with worked examples that
+  a test recomputes, and a Postgres recipe in the README (text only; no SQL or driver
+  dependency).
+
+### Fixed
+
+- **`splitValidPrefix` kept a rewritten entry as valid when a later entry also broke.**
+  With an `anchor`, a mismatch at the anchored index now puts everything in `rest` and is
+  reported as the first break, even when a malformed entry follows. The streaming
+  verifier reports the same earlier break.
+- **An entry with a getter or `toJSON` method was serialized (running it) before being
+  rejected.** With the default canonicalizer, `verifyChain` and the streaming verifier
+  now reject it as `valid: false` without calling it.
+- **`anchor: undefined` and `expectedMinLength: undefined` silently skipped their
+  check.** A key that is present with the value `undefined` (for example, an
+  anchor lookup that found nothing) switched the check off, so a rewritten or
+  truncated chain verified. It now throws a `TypeError`, the same as an unknown
+  option key. Leave the key out to skip the check.
+- **A live entry could verify as something other than what was hashed.** The
+  default canonicalizer hashes the JSON form of a value, so an in-memory entry
+  holding a `toJSON` method, a function, `undefined`, a symbol, `NaN`,
+  `Infinity`, a getter, a symbol-keyed or non-enumerable field, a `Map`, `Set` or
+  class instance, or an array with holes verified as valid while the object you
+  held differed from the object that was hashed. `verifyChain` now reports such an
+  entry invalid at its index, and `appendEntry` refuses such a payload with a
+  `TypeError` that names where. A stored `1e999` (which parses to `Infinity`) where
+  `null` was hashed is now reported invalid, not read as `null`.
+- **Deep nesting threw the engine's stack-overflow `RangeError`.** An entry nested
+  deeper than 256 levels now gives `valid: false` from `verifyChain`, a `TypeError`
+  from `appendEntry`, and a `RangeError` that names the limit from `canonicalJSON`.
+  The limit is fixed, so a chain no longer verifies on one machine and overflows on
+  another.
+- **An unreadable entry threw instead of failing closed.** A revoked proxy or a
+  getter that throws, as an entry or as the chain itself, now gives `valid: false`
+  at that entry (or with `brokenAtIndex: null` for the chain).
+- **Reason text could carry visually blank characters.** NBSP and the other Unicode
+  spaces, and U+2800 (Braille blank), are now written as `\uXXXX`, and an
+  `anchor.entryHash` made only of them (or of U+2800) throws like a blank one.
+
+- **The faithfulness check no longer runs caller code or misses inherited hooks.** It
+  reads property descriptors only (no getter, `toJSON` or `valueOf` runs), rejects a
+  `toJSON` anywhere on a prototype chain (including a null-prototype parent), and
+  rejects Date, Map, Set, RegExp, ArrayBuffer, typed-array and boxed-primitive
+  objects even with the prototype removed. A root entry that is a class instance is
+  accepted only if nothing on its prototype chain defines `toJSON`. `verifyChain`
+  no longer invokes getters on an entry's own fields.
+- **The faithfulness check was about 13 times slower than needed on ordinary data.**
+  It threw and caught a TypeError per brand probe for every object. Ordinary objects
+  now take a non-throwing path (`Object.prototype.toString`, `ArrayBuffer.isView`);
+  the throwing probes run only for an object with no own keys whose prototype is not
+  `Object.prototype`. Verifying 2,000 small entries is back to about the cost of 0.2.1.
+- **The nesting check and the inspection used memory proportional to width.** An array of
+  1,500,000 numbers ran out of heap under `--max-old-space-size=128`, where 0.2.1 did not.
+  Both now keep memory proportional to depth (arrays over 50,000 elements are checked
+  without listing every key; see Honest limits).
+- **A long key put its whole text into a reason or error.** A payload key of 100,000
+  characters gave a 100,000-character message. Keys are cut at 80 characters and the
+  reported path stops at about 200.
+- **`verifyChain` returned a thrown error for malformed data the default
+  canonicalizer could not serialize** (for example `{ first: undefined, later: 1n }`,
+  a nested throwing getter or a revoked proxy). It now returns `valid: false` at that
+  entry. Errors thrown by a custom `canonicalize` still propagate.
+
+### Changed
+
+- **`VerifyResult` has a new field, `entriesChecked`**: how many entries were fully
+  checked before the result was decided. An empty chain is `valid: true` with
+  `entriesChecked: 0`; read it before treating a result as evidence that a log has
+  content. Code that compares a whole result with strict deep equality now needs
+  the new key.
+- **Behavior change: `appendEntry` refuses payloads that JSON would change** (with
+  the default canonicalizer). `new Date(...)` payloads, `{ a: undefined }`, `NaN`,
+  `Map`, `Set` and class instances used to be converted silently. Convert them
+  first (`date.toISOString()`, `null`, plain objects). A custom `canonicalize` is
+  not checked. Stored JSON text is unaffected.
+- **Behavior change: `verifyChain` reports an in-memory entry invalid when it is
+  not plain JSON data** (same rule, applied to the whole entry). The entry object
+  itself may still be a class instance, such as an ORM row, if its own fields are
+  plain data. A cycle or a BigInt in an entry now gives `valid: false` instead of a
+  thrown `TypeError`.
+- **Behavior change: `anchor` and `expectedMinLength` present with the value
+  `undefined` now throw.** Code that passed `{ anchor: maybeUndefined }` must leave
+  the key out when there is no anchor.
+
+### Documented
+
+- Verification is over parsed JSON values, not stored bytes: `-0` for `0`, a
+  repeated object key (last wins), alternate spellings of a number, different
+  escapes of a string, whitespace and key order all verify. Integers beyond 2^53
+  are read as the nearest double, so a different literal can verify and another
+  language that keeps exact integers computes different bytes. See "Honest limits".
+- The 256-level nesting limit and the cost of the new inspection pass.
+- `hash: undefined` still means the default hasher.
+
 ## [0.2.1] - 2026-10-07
 
 No change to the library's behavior or API.
@@ -116,7 +308,7 @@ every golden vector are unchanged, so existing chains still verify.
   on Node 26.3.0, and guarded in CI on Node 20, 22, and 24 by an extended
   `scripts/verify-package.mjs`.
 - README: a "Relationship to sibling kits" section linking to
-  [agent-receipt-kit](https://github.com/lkopietz3-byte/agent-receipt-kit) —
+  [agent-receipt-kit](https://github.com/lkopietz3-byte/agent-receipt-kit):
   a receipt-verification result can be appended to a chain built with this
   package for a tamper-evident record of what an agent claimed and when.
 

@@ -31,6 +31,39 @@
   deep-copied (documented in the README).
 - Error and reason text never throws and never carries raw control, bidi or
   invisible characters (`describe()` in `src/chain.ts`, `test/messages.test.ts`).
+- With the default `canonicalJSON`, the object you hold is the object that was
+  hashed: `appendEntry` refuses a payload, and `verifyChain` reports an entry
+  invalid, when it differs from its JSON form (`toJSON`, functions, `undefined`,
+  symbols, non-finite numbers, getters, hidden or symbol-keyed fields, holes,
+  non-plain objects, cycles) or nests deeper than `MAX_NESTING_DEPTH` (256, the
+  entry itself being level 1). The inspection (`src/json-data.ts`) never calls
+  caller code and never uses `value[key]`: it reads property descriptors (own and
+  along the prototype chain), so a getter, `toJSON` or `valueOf` is never run.
+  With the default canonicalizer a serialization throw is `valid: false`; a custom
+  canonicalizer's errors propagate. Parsed JSON text always passes. A custom canonicalizer is not
+  checked (`test/verdict-table.test.ts`).
+- An option key that is present with the value `undefined` (`anchor`,
+  `expectedMinLength`) throws; it never skips the check. `VerifyResult` always
+  carries `entriesChecked`, and an empty chain is `valid: true` with `0`.
+- The store-backed API (`src/compute.ts`, `src/gap.ts`, `src/verifier.ts`,
+  `src/store.ts`) reuses the same canonical form, JSON-faithfulness check and
+  reason text as `appendEntry` and `verifyChain`, and never reads the clock:
+  `createdAt` is always supplied. The streaming verifier snapshots each entry's
+  own fields when `push` is called, fails only on positive evidence, and reports a
+  throwing `hash` or `canonicalize` as `status: "error"`, never as valid and never
+  as a chain break. A gap record is accepted only with `allowMarkedGaps: true` and an
+  exact range; an index jump otherwise is a break. `appendToStore` returns
+  `unavailable` for any store failure or unrecognized answer and never reports an
+  entry as appended unless the store said `appended`. With an `anchor`, the
+  streaming verifier and `splitValidPrefix` treat a mismatch at the anchored index as a
+  break that vouches for no entry up to it. The table is
+  `test/store-verdict-table.test.ts`; the spec examples are
+  `test/canonical-spec.test.ts`.
+- Stored rows (`src/stored.ts`, `pushRow`): a different value is never accepted as equal.
+  Only exactly-representable forms are converted (a decimal-string or bigint index that is
+  a safe integer); a `Date`, a reformatted timestamp or an upper-case hash is refused or
+  fails the hash, and the hash-mismatch reason may point at storage only when the entry
+  shows a known sign of it. Rows in `test/stored-rows.test.ts`.
 - Zero runtime dependencies. Only `src/hash-node-fallback.ts` imports a Node
   built-in, and `src/index.ts` never imports it (source-scan tests).
 
@@ -38,7 +71,11 @@
 
 - Detection of a rewrite, or of truncate-then-append, without an anchor held
   outside the writer's control. There is no key.
-- Anything about who wrote an entry or whether `createdAt` is accurate.
+- Anything about who wrote an entry or whether `createdAt` is accurate, including
+  a `createdAt` read from a store's clock.
+- That a store's `appendIfHead` is atomic under real concurrency. The in-memory
+  reference store is for tests; a database store, its constraints and its fault
+  behavior are the application's to test.
 - A migration path between format versions. `verifyChain` only accepts the
   current `FORMAT_VERSION`; reading an older or newer format is not
   implemented.
@@ -71,13 +108,15 @@ the same commit with a CHANGELOG entry.
 Run by hand, not in CI: `npm i -D --no-save @stryker-mutator/core
 @stryker-mutator/vitest-runner @vitest/coverage-v8@4.1.11`, then `npx stryker run`
 with an uncommitted `stryker.config.json` (`testRunner: "vitest"`,
-`mutate: ["src/**/*.ts"]`). The 0.2.0 run scored 99.27% (407 of 410 mutants
-killed or timed out; it was 88.85% at 0.1.1). The 3 survivors are equivalent:
+`mutate: ["src/**/*.ts"]`). The last run was at 0.2.0 and scored 99.27% (407 of
+410 mutants killed or timed out; it was 88.85% at 0.1.1), with v8 coverage at
+100% of statements, branches, functions and lines. Both numbers predate the
+store-backed API, the stored-row reader and the faithfulness check of 0.3.0, and
+have not been re-measured for it. The 3 survivors at 0.2.0 were equivalent:
 `length < minLength` with `minLength` undefined (`length < undefined` is
 already false), `code > 0xffff` vs `>=` in the escaper (U+FFFF is never
 escaped), and the `"utf8"` argument to `createHash().update` (it is the
-default encoding). v8 coverage is 100% of statements, branches, functions and
-lines.
+default encoding).
 
 ## Are the types wrong? (attw)
 
@@ -86,7 +125,7 @@ CI runs [`arethetypeswrong`](https://github.com/arethetypeswrong/arethetypeswron
 against the packed tarball after the build step, and the release workflow runs
 it before publishing. The `cjs-resolves-to-esm` rule is ignored on
 purpose: this is an ESM-only package (`"type": "module"`, no `require` entry point), so a
-CommonJS consumer must use Node's `require(esm)` support (Node >=20.19 or >=22.12 — see
+CommonJS consumer must use Node's `require(esm)` support (Node >=20.19 or >=22.12; see
 "Runtime support policy" below) rather than a native `require`. A dual CJS+ESM build was
 rejected to avoid the dual-package hazard (two separately-identified copies of the same module,
 with broken `instanceof` checks and duplicated module state across the CJS and ESM entry
@@ -121,7 +160,7 @@ versions by their exact bytes, so avoid unpublishing even where the policy would
 ### Runtime support policy
 
 - **Supported (recommended for production):** Node 22 and 24 LTS; Node 26 current.
-- **Compatibility-tested:** Node 20. Node 20 is end-of-life — nodejs.org's release page
+- **Compatibility-tested:** Node 20. Node 20 is end-of-life: nodejs.org's release page
   (<https://nodejs.org/en/about/previous-releases>) lists it as `EOL`, with its final release
   dated Mar 24, 2026. The `compat` job in `verify.yml` still runs the tests and
   `scripts/verify-package.mjs` (which includes the CommonJS `require()` probe) on Node 20.19.0

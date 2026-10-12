@@ -10,6 +10,23 @@ export type {
 } from "./types.js";
 export { canonicalJSON } from "./canonicalize.js";
 export { sha256Hex } from "./hash.js";
+export { computeEntry, GENESIS_HEAD } from "./compute.js";
+export type { ChainHead, ComputeEntryInput, ComputeEntryOptions } from "./compute.js";
+export { gapPayload, MARKED_GAP_KIND, MAX_GAP_REASON_LENGTH } from "./gap.js";
+export type { GapPayload, MarkedGap } from "./gap.js";
+export { readStoredEntry } from "./stored.js";
+export type { ReadStoredEntryOptions, StoredEntryResult } from "./stored.js";
+export { createChainVerifier, splitValidPrefix } from "./verifier.js";
+export type { ChainVerifier, ChainVerifierOptions, ChainVerifierResult, SplitResult, UnreadableEntry } from "./verifier.js";
+export { appendGapToStore, appendToStore, createMemoryAppendStore } from "./store.js";
+export type {
+  AppendOutcome,
+  AppendStore,
+  AppendToStoreOptions,
+  MemoryAppendStore,
+  StoreAppendResult,
+  StoreHeadResult,
+} from "./store.js";
 
 // The node:crypto hasher is deliberately not re-exported here, so importing
 // the main entry never pulls in a Node built-in. Import it from

@@ -84,6 +84,7 @@ describe("golden vectors", () => {
       valid: true,
       brokenAtIndex: null,
       reason: null,
+      entriesChecked: 2,
     });
   });
 });

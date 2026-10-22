@@ -15,7 +15,7 @@ import type { Hasher } from "./types.js";
  * @throws TypeError (as a rejected promise) if `input` is not a string
  * @throws Error (as a rejected promise) if `globalThis.crypto.subtle` is
  *   missing; in that case pass `sha256HexNodeFallback` from
- *   "audit-chain-kit/hash-node-fallback".
+ *   "@evidencekit/audit-chain/hash-node-fallback".
  */
 export const sha256Hex: Hasher = async (input: string): Promise<string> => {
   if (typeof input !== "string") {
@@ -27,7 +27,7 @@ export const sha256Hex: Hasher = async (input: string): Promise<string> => {
   if (!subtle) {
     throw new Error(
       "Web Crypto (crypto.subtle) is unavailable in this environment. " +
-        'Pass sha256HexNodeFallback from "audit-chain-kit/hash-node-fallback" as the hash function.',
+        'Pass sha256HexNodeFallback from "@evidencekit/audit-chain/hash-node-fallback" as the hash function.',
     );
   }
   const bytes = new TextEncoder().encode(input);

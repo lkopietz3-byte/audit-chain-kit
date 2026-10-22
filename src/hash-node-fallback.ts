@@ -16,8 +16,8 @@ import type { Hasher } from "./types.js";
  * hasher it was appended with):
  *
  * ```ts
- * import { appendEntry, canonicalJSON, verifyChain } from "audit-chain-kit";
- * import { sha256HexNodeFallback } from "audit-chain-kit/hash-node-fallback";
+ * import { appendEntry, canonicalJSON, verifyChain } from "@evidencekit/audit-chain";
+ * import { sha256HexNodeFallback } from "@evidencekit/audit-chain/hash-node-fallback";
  * const chain = await appendEntry([], { a: 1 }, canonicalJSON, sha256HexNodeFallback);
  * await verifyChain(chain, undefined, { hash: sha256HexNodeFallback });
  * ```

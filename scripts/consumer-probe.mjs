@@ -6,8 +6,8 @@ import {
   appendEntry, appendGapToStore, appendToStore, canonicalJSON, computeEntry, createChainVerifier,
   createMemoryAppendStore, FORMAT_VERSION, gapPayload, GENESIS_HASH, GENESIS_HEAD, readStoredEntry, sha256Hex,
   splitValidPrefix, verifyChain,
-} from 'audit-chain-kit';
-import { sha256HexNodeFallback } from 'audit-chain-kit/hash-node-fallback';
+} from '@evidencekit/audit-chain';
+import { sha256HexNodeFallback } from '@evidencekit/audit-chain/hash-node-fallback';
 
 const valid = (entriesChecked) => ({ valid: true, brokenAtIndex: null, reason: null, entriesChecked });
 
@@ -165,4 +165,4 @@ await assert.rejects(appendEntry([stored[2]], { action: 'x' }), RangeError);
   assert.equal((await anchored.finish()).valid, true);
 }
 
-console.log('consumer probe: audit-chain-kit and audit-chain-kit/hash-node-fallback OK');
+console.log('consumer probe: @evidencekit/audit-chain and @evidencekit/audit-chain/hash-node-fallback OK');

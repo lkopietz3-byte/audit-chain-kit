@@ -77,4 +77,4 @@ jobs:
 
       - name: Publish to npm
         if: steps.check.outputs.already_published == 'false'
-        run: npm publish
+        run: npm publish --access public

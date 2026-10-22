@@ -180,7 +180,7 @@ describe("hashers: exact rejection messages", () => {
     Object.defineProperty(globalThis, "crypto", { value: undefined, configurable: true });
     try {
       await expect(sha256Hex("x")).rejects.toThrow(
-        'Pass sha256HexNodeFallback from "audit-chain-kit/hash-node-fallback" as the hash function.',
+        'Pass sha256HexNodeFallback from "@evidencekit/audit-chain/hash-node-fallback" as the hash function.',
       );
     } finally {
       Object.defineProperty(globalThis, "crypto", original);

@@ -6,6 +6,10 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-22
+
+Renamed from `audit-chain-kit` to `@evidencekit/audit-chain`, part of the Evidence Kit family. No behavior change: the exported API, the record format (`audit-chain-kit/v1`, still the fixed tag written into every entry), `canonicalJSON` output and every golden vector are unchanged. Install `@evidencekit/audit-chain` and update your imports. The error message for a missing hash function now names the new `@evidencekit/audit-chain/hash-node-fallback` import path.
+
 ## [0.3.0] - unreleased
 
 Minor bump. The record format (`audit-chain-kit/v1`), `canonicalJSON` output and every

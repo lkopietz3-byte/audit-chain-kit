@@ -4,12 +4,12 @@
 import {
   appendEntry, appendGapToStore, appendToStore, canonicalJSON, computeEntry, createChainVerifier, FORMAT_VERSION,
   GENESIS_HASH, GENESIS_HEAD, readStoredEntry, sha256Hex, splitValidPrefix, verifyChain,
-} from 'audit-chain-kit';
+} from '@evidencekit/audit-chain';
 import type {
   AppendOutcome, AppendStore, GapPayload, Canonicalizer, ChainAnchor, ChainEntry, ChainHead, ChainRecord,
   ChainVerifierResult, Hasher, StoredEntryResult, VerifyOptions, VerifyResult,
-} from 'audit-chain-kit';
-import { sha256HexNodeFallback } from 'audit-chain-kit/hash-node-fallback';
+} from '@evidencekit/audit-chain';
+import { sha256HexNodeFallback } from '@evidencekit/audit-chain/hash-node-fallback';
 
 interface AuditEvent { action: string; by: string }
 

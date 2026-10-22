@@ -1,4 +1,4 @@
-# Canonical form of an audit-chain-kit entry (format `audit-chain-kit/v1`)
+# Canonical form of an @evidencekit/audit-chain entry (format `audit-chain-kit/v1`)
 
 This page says, byte by byte, what is hashed for one entry, so you can
 recompute an `entryHash` in SQL or in another language. If this page and the

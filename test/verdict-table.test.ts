@@ -744,7 +744,7 @@ describe("verdict table: second review round (cost on the common path, bounded p
 describe("verdict table: memory does not grow with width (child process, 128 MB heap)", () => {
   /** Compiles src/ to a temp folder and runs `script` there under a capped heap, so a heap blow-up kills the child, not the test run. */
   function runCapped(script: string): { status: number | null; stdout: string; stderr: string } {
-    const dir = mkdtempSync(join(tmpdir(), "audit-chain-kit-heap-"));
+    const dir = mkdtempSync(join(tmpdir(), "audit-chain-heap-"));
     try {
       const sourceDir = fileURLToPath(new URL("../src/", import.meta.url));
       for (const name of readdirSync(sourceDir).filter((file) => file.endsWith(".ts") && !file.endsWith(".d.ts"))) {

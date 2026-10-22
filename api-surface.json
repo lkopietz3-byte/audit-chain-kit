@@ -1,5 +1,5 @@
 {
-  "audit-chain-kit": [
+  "@evidencekit/audit-chain": [
     "FORMAT_VERSION",
     "GENESIS_HASH",
     "GENESIS_HEAD",
@@ -18,7 +18,7 @@
     "splitValidPrefix",
     "verifyChain"
   ],
-  "audit-chain-kit/hash-node-fallback": [
+  "@evidencekit/audit-chain/hash-node-fallback": [
     "sha256HexNodeFallback"
   ]
 }

@@ -1,6 +1,8 @@
-# audit-chain-kit
+# @evidencekit/audit-chain
 
-**[Try it in your browser →](https://lkopietz3-byte.github.io/honesty-kits/#audit-chain-kit)** · Part of [honesty kits](https://github.com/lkopietz3-byte/honesty-kits), a family of small checks for the claims an AI product makes.
+**Evidence Kit** · [Try it in your browser →](https://evidencekit.github.io/#audit-chain) · Checks that tie AI output and public claims back to their evidence.
+
+Formerly published as `audit-chain-kit`.
 
 A neutral verifier and a published spec for hash-chained audit data that your
 application already writes, in TypeScript, with zero runtime dependencies.
@@ -72,7 +74,7 @@ nothing is signed, and `createdAt` is whatever the writer's clock said.
 ## Install
 
 ```bash
-npm install audit-chain-kit
+npm install @evidencekit/audit-chain
 ```
 
 Or build from source: clone the repository and run
@@ -98,7 +100,7 @@ floors) and gets no upstream security fixes. `engines` in `package.json` is
 ## Quickstart
 
 ```js
-import { appendEntry, verifyChain } from "audit-chain-kit";
+import { appendEntry, verifyChain } from "@evidencekit/audit-chain";
 
 let chain = await appendEntry([], { action: "report.created", by: "user_1" });
 chain = await appendEntry(chain, { action: "report.exported", by: "user_1" });
@@ -170,7 +172,7 @@ formatting is not JavaScript's for every value.
 
 ## API
 
-Main entry: `audit-chain-kit`.
+Main entry: `@evidencekit/audit-chain`.
 
 ### `appendEntry(chain, payload, canonicalize?, hash?)`
 
@@ -333,7 +335,7 @@ entry's `formatVersion` field, and the only value `verifyChain` accepts
 there. Compare against it if you write your own tooling around stored
 chains.
 
-### `sha256HexNodeFallback(input)` from `audit-chain-kit/hash-node-fallback`
+### `sha256HexNodeFallback(input)` from `@evidencekit/audit-chain/hash-node-fallback`
 
 Same contract and same output as `sha256Hex` (tested, including non-ASCII
 and lone surrogates), using `node:crypto`. For Node-like runtimes without
@@ -341,8 +343,8 @@ and lone surrogates), using `node:crypto`. For Node-like runtimes without
 main entry never imports it.
 
 ```js
-import { appendEntry, canonicalJSON, verifyChain } from "audit-chain-kit";
-import { sha256HexNodeFallback } from "audit-chain-kit/hash-node-fallback";
+import { appendEntry, canonicalJSON, verifyChain } from "@evidencekit/audit-chain";
+import { sha256HexNodeFallback } from "@evidencekit/audit-chain/hash-node-fallback";
 
 const chain = await appendEntry([], { a: 1 }, canonicalJSON, sha256HexNodeFallback);
 console.log((await verifyChain(chain, undefined, { hash: sha256HexNodeFallback })).valid); // true
@@ -374,7 +376,7 @@ small functions.
 import {
   appendToStore, computeEntry, createChainVerifier, splitValidPrefix,
   type AppendStore,
-} from "audit-chain-kit";
+} from "@evidencekit/audit-chain";
 ```
 
 ### `computeEntry({ prevHash, index, payload, createdAt })`
@@ -733,7 +735,7 @@ for deleting data.
 
 ## Relationship to sibling kits
 
-[agent-receipt-kit](https://github.com/lkopietz3-byte/agent-receipt-kit)
+[@evidencekit/agent-receipts](https://github.com/evidencekit/agent-receipts)
 checks whether an autonomous agent's self-reported claim matches what it was
 authorized to do and what a caller-supplied observation shows. It does not know
 about hash chains, and this package does not know what a receipt is. The

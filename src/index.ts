@@ -30,4 +30,4 @@ export type {
 
 // The node:crypto hasher is deliberately not re-exported here, so importing
 // the main entry never pulls in a Node built-in. Import it from
-// "audit-chain-kit/hash-node-fallback" if you need it.
+// "@evidencekit/audit-chain/hash-node-fallback" if you need it.

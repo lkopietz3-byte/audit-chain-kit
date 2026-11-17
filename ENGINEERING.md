@@ -106,7 +106,7 @@ the same commit with a CHANGELOG entry.
 ## Mutation testing
 
 Run by hand, not in CI: `npm i -D --no-save @stryker-mutator/core
-@stryker-mutator/vitest-runner @vitest/coverage-v8@4.1.11`, then `npx stryker run`
+@stryker-mutator/vitest-runner @vitest/coverage-v8@4.1.12`, then `npx stryker run`
 with an uncommitted `stryker.config.json` (`testRunner: "vitest"`,
 `mutate: ["src/**/*.ts"]`). The last run was at 0.2.0 and scored 99.27% (407 of
 410 mutants killed or timed out; it was 88.85% at 0.1.1), with v8 coverage at

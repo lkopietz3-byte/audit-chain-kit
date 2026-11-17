@@ -36,7 +36,7 @@ assert.deepEqual(
   valid(1),
 );
 
-// A chain hashed without formatVersion (pre-round-2 format) is rejected with
+// A chain hashed without formatVersion (an older format) is rejected with
 // a clear reason, not silently accepted and not thrown.
 const preV1Record = '{"createdAt":"2026-01-01T00:00:00.000Z","index":0,"payload":{"action":"report.created","by":"user_1"},"prevHash":"0000000000000000000000000000000000000000000000000000000000000000"}';
 const preV1Hash = await sha256Hex(preV1Record);

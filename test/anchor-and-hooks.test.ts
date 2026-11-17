@@ -8,7 +8,7 @@ import {
 import type { ChainEntry } from "../src/index.js";
 
 /**
- * Final review round. Each case pins one input and its correct verdict:
+ * Edge cases. Each case pins one input and its correct verdict:
  * an anchor mismatch is not hidden by a later break, and an entry with a
  * getter or toJSON hook is rejected without running it.
  */

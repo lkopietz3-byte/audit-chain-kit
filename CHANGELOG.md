@@ -6,7 +6,7 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.3.0] - unreleased
+## [0.3.0] - 2026-10-12
 
 Minor bump. The record format (`audit-chain-kit/v1`), `canonicalJSON` output and every
 golden vector are unchanged, so chains written by earlier versions still verify when

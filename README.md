@@ -76,7 +76,7 @@ npm install audit-chain-kit
 ```
 
 Or build from source: clone the repository and run
-`npm install && npm run build`. The behavior described below is version 0.3.0;
+`npm install && npm run build`. The behavior described below is version 0.3.1 (the same as 0.3.0);
 [CHANGELOG.md](CHANGELOG.md) lists what changed, with a migration note for each
 breaking change from 0.2.1.
 
